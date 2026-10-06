@@ -8,3 +8,4 @@ aiosqlite>=0.20
 google-auth>=2.30
 requests>=2.32
 cryptography>=43
+asyncpg>=0.30

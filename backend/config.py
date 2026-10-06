@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     # Fernet key for encrypting user-connected Clarity tokens at rest.
     token_encryption_key: str = ""
     database_path: str = "clarity_ai.db"
+    # Postgres URL for hosted deployments (e.g. Neon or Render Postgres). When set, it wins over database_path.
+    database_url: str = ""
     cache_ttl_seconds: int = 3600
     snapshot_hour_utc: int = 23
     play_package_name: str = ""
