@@ -14,6 +14,11 @@ class Settings(BaseSettings):
     clarity_api_token: str = ""
     clarity_tokens_json: str = "{}"
     clarity_base_url: str = "https://www.clarity.ms/export-data/api/v1"
+    # Microsoft allows 10 export requests per Clarity project per day; keep some for the nightly snapshot.
+    clarity_daily_limit: int = 10
+    clarity_snapshot_reserve: int = 1
+    # Fernet key for encrypting user-connected Clarity tokens at rest.
+    token_encryption_key: str = ""
     database_path: str = "clarity_ai.db"
     cache_ttl_seconds: int = 3600
     snapshot_hour_utc: int = 23
