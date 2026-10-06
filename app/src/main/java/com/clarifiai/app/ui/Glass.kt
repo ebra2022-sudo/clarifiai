@@ -35,6 +35,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import android.content.res.Configuration
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import dev.chrisbanes.haze.ExperimentalHazeApi
@@ -71,7 +73,13 @@ fun LiquidBackground(state: HazeState, modifier: Modifier = Modifier, content: @
                     glow(Color(0xFFFFC9A3), 0.36f, Offset(size.width * 0.95f, size.height * 0.98f), size.width * 0.8f)
                 },
         )
-        CompositionLocalProvider(LocalHazeState provides state) { content() }
+        // The design is always light. Haze picks its dark glass material when the phone is in night mode, which
+        // turned the white glass grey, so present a day-mode configuration to everything inside.
+        val config = LocalConfiguration.current
+        val dayConfig = remember(config) {
+            Configuration(config).apply { uiMode = (uiMode and Configuration.UI_MODE_NIGHT_MASK.inv()) or Configuration.UI_MODE_NIGHT_NO }
+        }
+        CompositionLocalProvider(LocalConfiguration provides dayConfig, LocalHazeState provides state) { content() }
     }
 }
 
