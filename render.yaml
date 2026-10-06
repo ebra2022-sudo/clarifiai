@@ -1,0 +1,28 @@
+# Render Blueprint: Dashboard → New → Blueprint → pick this repo. Render asks for the `sync: false` values.
+services:
+  - type: web
+    name: clarifiai-api
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --proxy-headers
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      # Fernet key; generate once and never change it, or saved Clarity tokens can't be decrypted.
+      - key: TOKEN_ENCRYPTION_KEY
+        sync: false
+      # Free Postgres (Neon recommended). Without it the server falls back to SQLite on Render's
+      # ephemeral disk, which is wiped on every deploy and whenever the free instance sleeps.
+      - key: DATABASE_URL
+        sync: false
+      - key: CLAUDE_MODEL
+        value: claude-sonnet-5-5
+      # Testing only: lets debug builds act as Pro/Max (PDF export, longer ranges). Set to false before launch.
+      - key: DEV_ALLOW_TIER_OVERRIDE
+        value: "true"
