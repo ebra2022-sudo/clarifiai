@@ -22,15 +22,23 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.ErrorOutline
+import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.PictureAsPdf
 import androidx.compose.material.icons.outlined.WorkspacePremium
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -48,12 +56,12 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SelectableDates
 import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
@@ -72,17 +80,18 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.clarifiai.app.data.Kpis
+import com.clarifiai.app.data.ProjectDto
 import com.clarifiai.app.data.Tier
 import com.clarifiai.app.data.Timeframe
-import com.clarifiai.app.pdf.PdfExportUtility
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownColor
+import com.mikepenz.markdown.m3.markdownTypography
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
@@ -93,12 +102,19 @@ fun DashboardScreen(vm: DashboardViewModel, activity: Activity) {
     val state by vm.state.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     val context = LocalContext.current
+    val uriHandler = LocalUriHandler.current
     var showDatePicker by remember { mutableStateOf(false) }
+    var projectToDelete by remember { mutableStateOf<ProjectDto?>(null) }
 
     LaunchedEffect(Unit) {
         vm.events.collect { ev ->
             when (ev) {
-                is UiEvent.SharePdf -> PdfExportUtility.share(context, ev.file)
+                is UiEvent.ReportSaved -> {
+                    val result = snackbar.showSnackbar(
+                        "PDF saved to your reports.", actionLabel = "Open", duration = SnackbarDuration.Long,
+                    )
+                    if (result == SnackbarResult.ActionPerformed) vm.openReport(ev.report)
+                }
                 is UiEvent.Message -> snackbar.showSnackbar(ev.text)
             }
         }
@@ -121,6 +137,13 @@ fun DashboardScreen(vm: DashboardViewModel, activity: Activity) {
                     }
                 },
                 actions = {
+                    IconButton(onClick = vm::openReports) {
+                        BadgedBox(badge = {
+                            if (state.savedReports.isNotEmpty()) Badge(containerColor = Neon, contentColor = Navy) {
+                                Text("${state.savedReports.size}")
+                            }
+                        }) { Icon(Icons.Outlined.FolderOpen, "Saved reports", tint = TextPrimary) }
+                    }
                     IconButton(onClick = vm::exportPdf, enabled = !state.exporting) {
                         if (state.exporting) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp, color = Neon)
                         else Box {
@@ -154,7 +177,9 @@ fun DashboardScreen(vm: DashboardViewModel, activity: Activity) {
             item { KpiRow(state.kpis, state.loading) }
             item {
                 ControlsCard(
-                    projectId = state.projectId, onProjectId = vm::setProjectId,
+                    projects = state.projects, selected = state.selectedProject, projectsLoaded = state.projectsLoaded,
+                    onSelect = vm::selectProject, onConnect = vm::openConnect, onDelete = { projectToDelete = it },
+                    onEdit = vm::openEdit, onReconnect = vm::openReconnect,
                     timeframe = state.timeframe, allowed = state.entitlements.features.allowedTimeframes,
                     customLabel = if (state.customStart != null && state.customEnd != null) "${state.customStart} to ${state.customEnd}" else null,
                     onTimeframe = { tf ->
@@ -165,7 +190,11 @@ fun DashboardScreen(vm: DashboardViewModel, activity: Activity) {
                 )
             }
             item {
-                ReportCard(state, onUpgrade = vm::openUpgrade, onRetry = vm::runAudit)
+                ReportCard(
+                    state, onUpgrade = vm::openUpgrade, onRetry = vm::runAudit,
+                    onOpenRecordings = { url -> uriHandler.openUri(url) },
+                    onEditProject = vm::openEdit,
+                )
             }
         }
     }
@@ -174,6 +203,51 @@ fun DashboardScreen(vm: DashboardViewModel, activity: Activity) {
         DateRangeDialog(
             onDismiss = { showDatePicker = false },
             onConfirm = { s, e -> vm.setCustomRange(s, e); showDatePicker = false },
+        )
+    }
+
+    if (state.showConnect) {
+        ConnectProjectDialog(
+            connecting = state.connecting, error = state.connectError,
+            onConnect = vm::connectProject, onDismiss = vm::dismissConnect,
+            reconnecting = state.reconnectTarget,
+        )
+    }
+
+    state.editing?.let { p ->
+        EditProjectDialog(
+            project = p, saving = state.saving, error = state.editError,
+            onSave = vm::saveProject, onDismiss = vm::dismissEdit,
+        )
+    }
+
+    projectToDelete?.let { p ->
+        AlertDialog(
+            onDismissRequest = { projectToDelete = null },
+            containerColor = Surface1,
+            icon = { Icon(Icons.Outlined.Delete, null, tint = Bad) },
+            title = { Text("Delete project?") },
+            text = {
+                Text(
+                    "Are you sure you want to delete \"${p.name}\"? It's removed from your saved projects and its stored " +
+                        "Clarity token is erased. To use it again you'll need to paste a token.",
+                    color = TextMuted,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { vm.deleteProject(p.id); projectToDelete = null }) {
+                    Text("Delete", color = Bad, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = { TextButton(onClick = { projectToDelete = null }) { Text("Cancel", color = Neon) } },
+        )
+    }
+
+    if (state.showReports) {
+        SavedReportsSheet(
+            reports = state.savedReports,
+            onOpen = vm::openReport, onShare = vm::shareReport, onSaveTo = vm::saveReportTo,
+            onDelete = vm::deleteReport, onDismiss = vm::dismissReports,
         )
     }
 
@@ -239,22 +313,28 @@ private fun KpiCard(title: String, value: String, sub: String, accent: Color) {
 
 @Composable
 private fun ControlsCard(
-    projectId: String, onProjectId: (String) -> Unit,
+    projects: List<ProjectDto>, selected: ProjectDto?, projectsLoaded: Boolean,
+    onSelect: (String) -> Unit, onConnect: () -> Unit, onDelete: (ProjectDto) -> Unit,
+    onEdit: (ProjectDto) -> Unit, onReconnect: (ProjectDto) -> Unit,
     timeframe: Timeframe, allowed: List<String>, customLabel: String?,
     onTimeframe: (Timeframe) -> Unit, usageText: String?,
 ) {
     var expanded by remember { mutableStateOf(false) }
     Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Surface1), border = BorderStroke(1.dp, Border)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            OutlinedTextField(
-                value = projectId, onValueChange = onProjectId, singleLine = true,
-                label = { Text("Clarity project ID") }, modifier = Modifier.fillMaxWidth(),
-                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = Neon, unfocusedBorderColor = Border, focusedLabelColor = Neon,
-                    unfocusedLabelColor = TextMuted, cursorColor = Neon,
-                ),
-            )
+            if (projectsLoaded && projects.isEmpty()) {
+                Text("Connect your Microsoft Clarity project to start auditing.", color = TextMuted, style = MaterialTheme.typography.bodyMedium)
+                Button(
+                    onClick = onConnect, modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = Neon, contentColor = Navy),
+                ) {
+                    Icon(Icons.Filled.Add, null)
+                    Text("Connect Clarity project", Modifier.padding(start = 8.dp), fontWeight = FontWeight.Bold)
+                }
+            } else {
+                ProjectPicker(projects, selected, onSelect, onConnect, onDelete, onEdit)
+                if (selected?.needsReauth == true) ReconnectBanner(selected, onReconnect)
+            }
             Box {
                 OutlinedButton(
                     onClick = { expanded = true }, modifier = Modifier.fillMaxWidth(),
@@ -279,10 +359,83 @@ private fun ControlsCard(
     }
 }
 
+@Composable
+private fun ProjectPicker(
+    projects: List<ProjectDto>, selected: ProjectDto?,
+    onSelect: (String) -> Unit, onConnect: () -> Unit, onDelete: (ProjectDto) -> Unit, onEdit: (ProjectDto) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        OutlinedButton(
+            onClick = { expanded = true }, modifier = Modifier.fillMaxWidth(),
+            border = BorderStroke(1.dp, Border), colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary),
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(selected?.name ?: "Choose a project", fontWeight = FontWeight.SemiBold)
+                selected?.let {
+                    if (it.needsReauth) Text("Needs reconnecting", color = Warn, style = MaterialTheme.typography.labelMedium)
+                    else Text(clarityRequestsLabel(it), color = TextMuted, style = MaterialTheme.typography.labelMedium)
+                }
+            }
+            Icon(Icons.Filled.ArrowDropDown, null)
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, containerColor = Surface2) {
+            projects.forEach { p ->
+                DropdownMenuItem(
+                    text = {
+                        Column {
+                            Text(p.name, color = TextPrimary, fontWeight = if (p.id == selected?.id) FontWeight.Bold else FontWeight.Normal)
+                            if (p.needsReauth) Text("Needs reconnecting", color = Warn, style = MaterialTheme.typography.labelMedium)
+                            else Text(clarityRequestsLabel(p), color = TextMuted, style = MaterialTheme.typography.labelMedium)
+                        }
+                    },
+                    trailingIcon = {
+                        Row {
+                            IconButton(onClick = { expanded = false; onEdit(p) }) {
+                                Icon(Icons.Outlined.Edit, "Rename ${p.name}", tint = TextMuted)
+                            }
+                            IconButton(onClick = { expanded = false; onDelete(p) }) {
+                                Icon(Icons.Outlined.Delete, "Delete ${p.name}", tint = TextMuted)
+                            }
+                        }
+                    },
+                    onClick = { expanded = false; onSelect(p.id) },
+                )
+            }
+            DropdownMenuItem(
+                text = { Text("Connect another project", color = Neon) },
+                leadingIcon = { Icon(Icons.Filled.Add, null, tint = Neon) },
+                onClick = { expanded = false; onConnect() },
+            )
+        }
+    }
+}
+
+@Composable
+private fun ReconnectBanner(project: ProjectDto, onReconnect: (ProjectDto) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Warn.copy(alpha = 0.12f)).padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Outlined.ErrorOutline, null, tint = Warn, modifier = Modifier.size(18.dp))
+        Text("Clarity stopped accepting this project's token.", Modifier.weight(1f).padding(horizontal = 8.dp),
+            color = TextPrimary, style = MaterialTheme.typography.bodyMedium)
+        TextButton(onClick = { onReconnect(project) }) { Text("Reconnect", color = Neon, fontWeight = FontWeight.Bold) }
+    }
+}
+
+private fun clarityRequestsLabel(p: ProjectDto): String {
+    val left = (p.clarityRequests.limit - p.clarityRequests.used).coerceAtLeast(0)
+    return "$left of ${p.clarityRequests.limit} Clarity data refreshes left today"
+}
+
 // ------------------------------------------------------------------ report
 
 @Composable
-private fun ReportCard(state: DashboardUiState, onUpgrade: () -> Unit, onRetry: () -> Unit) {
+private fun ReportCard(
+    state: DashboardUiState, onUpgrade: () -> Unit, onRetry: () -> Unit,
+    onOpenRecordings: (String) -> Unit, onEditProject: (ProjectDto) -> Unit,
+) {
     Card(
         modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = Surface1), border = BorderStroke(1.dp, Border),
@@ -298,16 +451,58 @@ private fun ReportCard(state: DashboardUiState, onUpgrade: () -> Unit, onRetry: 
                 state.loading && state.markdown.isBlank() -> ShimmerReport()
                 state.error != null && state.markdown.isBlank() -> ErrorBlock(state.error, onRetry)
                 state.markdown.isBlank() -> Text(
-                    "Enter your Clarity project ID, choose a timeframe and run an audit. You'll get a prioritised hotfix list, friction trends and a sprint roadmap.",
+                    "Choose a connected Clarity project and a timeframe, then run an audit. You'll get a prioritised hotfix list, friction trends and a sprint roadmap.",
                     color = TextMuted,
                 )
                 else -> Markdown(
                     content = state.markdown,
                     colors = markdownColor(text = TextPrimary, codeBackground = Surface2, dividerColor = Border),
+                    // The renderer's default headings are display-sized; keep them in proportion to the card.
+                    typography = markdownTypography(
+                        h1 = MaterialTheme.typography.titleLarge,
+                        h2 = MaterialTheme.typography.titleLarge,
+                        h3 = MaterialTheme.typography.titleMedium.copy(fontSize = 18.sp, lineHeight = 26.sp),
+                    ),
                 )
             }
             if (state.error != null && state.markdown.isNotBlank()) Text(state.error, color = Bad)
             state.lockedMessage?.let { LockedBanner(it, onUpgrade) }
+            if (state.markdown.isNotBlank() && !state.loading) {
+                state.selectedProject?.let { DataScopeNote(it, onOpenRecordings, onEditProject) }
+            }
+        }
+    }
+}
+
+/**
+ * Clarity's export API returns aggregated metrics only, never session recordings or heatmaps. Say so under every
+ * report, and send the user to the recordings in Clarity so they can watch the sessions behind each finding.
+ */
+@Composable
+private fun DataScopeNote(project: ProjectDto, onOpenRecordings: (String) -> Unit, onEditProject: (ProjectDto) -> Unit) {
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Surface2).padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Outlined.Info, null, tint = Neon, modifier = Modifier.size(18.dp))
+            Text("Based on aggregated metrics", Modifier.padding(start = 8.dp), fontWeight = FontWeight.SemiBold)
+        }
+        Text(
+            "Clarity's Data Export API shares counts like rage and dead clicks, not session recordings or heatmaps, " +
+                "so this report hasn't watched any sessions. Check the pages it flags in Clarity's recordings before you fix them.",
+            color = TextMuted, style = MaterialTheme.typography.bodyMedium,
+        )
+        val url = project.recordingsUrl
+        if (url != null) {
+            TextButton(onClick = { onOpenRecordings(url) }) {
+                Icon(Icons.Outlined.OpenInNew, null, tint = Neon, modifier = Modifier.size(16.dp))
+                Text("Watch recordings in Clarity", Modifier.padding(start = 6.dp), color = Neon, fontWeight = FontWeight.Bold)
+            }
+        } else {
+            TextButton(onClick = { onEditProject(project) }) {
+                Text("Add your Clarity project ID to link recordings", color = Neon)
+            }
         }
     }
 }
@@ -371,8 +566,10 @@ private fun ShimmerReport() {
 @Composable
 private fun DateRangeDialog(onDismiss: () -> Unit, onConfirm: (LocalDate, LocalDate) -> Unit) {
     val state = rememberDateRangePickerState(
+        // The backend validates dates in UTC and rejects future end dates, so stop at today's UTC date.
         selectableDates = object : SelectableDates {
-            override fun isSelectableDate(utcTimeMillis: Long) = utcTimeMillis <= System.currentTimeMillis() + 86_400_000L
+            private val todayUtcMillis = LocalDate.now(ZoneOffset.UTC).toEpochDay() * 86_400_000L
+            override fun isSelectableDate(utcTimeMillis: Long) = utcTimeMillis <= todayUtcMillis
         },
     )
     val start = state.selectedStartDateMillis
