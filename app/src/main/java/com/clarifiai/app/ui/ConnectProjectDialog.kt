@@ -33,6 +33,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
@@ -50,8 +51,9 @@ private const val CLARITY_EXPORT_DOCS =
 
 @Composable
 internal fun clarityFieldColors() = OutlinedTextFieldDefaults.colors(
-    focusedBorderColor = Neon, unfocusedBorderColor = Border, focusedLabelColor = Neon,
-    unfocusedLabelColor = TextMuted, cursorColor = Neon,
+    focusedBorderColor = Accent, unfocusedBorderColor = Hairline, focusedLabelColor = Accent,
+    unfocusedLabelColor = InkMuted, cursorColor = Accent,
+    focusedContainerColor = Color.White, unfocusedContainerColor = Color.White, disabledContainerColor = Color.White,
 )
 
 /**
@@ -86,7 +88,8 @@ fun ConnectProjectDialog(
             dismissOnClickOutside = name.isEmpty() && token.isEmpty() && clarityId.isEmpty(),
             decorFitsSystemWindows = false,
         ),
-        containerColor = Surface1,
+        containerColor = SheetColor,
+        shape = DialogShape,
         title = { Text(if (reconnecting != null) "Reconnect ${reconnecting.name}" else "Connect Clarity project") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -97,25 +100,26 @@ fun ConnectProjectDialog(
                         color = Warn, style = MaterialTheme.typography.bodyMedium,
                     )
                 }
-                Text("Get an API token from Microsoft Clarity:", color = TextPrimary, fontWeight = FontWeight.SemiBold)
+                Text("Get an API token from Microsoft Clarity:", color = Ink, fontWeight = FontWeight.SemiBold)
                 listOf(
                     "Open your project at clarity.microsoft.com",
                     "Settings → Data Export → Generate new API token",
                     "Name it (e.g. clarity-ai) and copy the token",
                 ).forEachIndexed { i, step ->
-                    Text("${i + 1}. $step", color = TextMuted, style = MaterialTheme.typography.bodyMedium)
+                    Text("${i + 1}. $step", color = InkMuted, style = MaterialTheme.typography.bodyMedium)
                 }
                 Text(
                     "Only project admins can create tokens. Microsoft allows 10 data requests per project per day, " +
                         "so reports refresh up to 9 times a day.",
-                    color = TextMuted, style = MaterialTheme.typography.labelMedium,
+                    color = InkMuted, style = MaterialTheme.typography.labelMedium,
                 )
                 TextButton(onClick = { uriHandler.openUri(CLARITY_EXPORT_DOCS) }) {
-                    Icon(Icons.Outlined.OpenInNew, null, tint = Neon, modifier = Modifier.size(16.dp))
-                    Text("Microsoft's guide", Modifier.padding(start = 6.dp), color = Neon)
+                    Icon(Icons.Outlined.OpenInNew, null, tint = Accent, modifier = Modifier.size(16.dp))
+                    Text("Microsoft's guide", Modifier.padding(start = 6.dp), color = Accent)
                 }
                 if (reconnecting == null) {
                     OutlinedTextField(
+                        shape = GlassShapes.Control,
                         value = name, onValueChange = { name = it.take(40) }, singleLine = true, enabled = !connecting,
                         label = { Text("Project name") }, placeholder = { Text("My website") },
                         keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, imeAction = ImeAction.Next),
@@ -123,6 +127,7 @@ fun ConnectProjectDialog(
                     )
                 }
                 OutlinedTextField(
+                    shape = GlassShapes.Control,
                     value = token, onValueChange = { token = it.trim() }, singleLine = true, enabled = !connecting,
                     label = { Text("Clarity API token") },
                     visualTransformation = if (showToken) VisualTransformation.None else PasswordVisualTransformation(),
@@ -136,13 +141,13 @@ fun ConnectProjectDialog(
                         // Tap-only: kept out of keyboard focus order so Next goes to the next field, not this toggle.
                         IconButton(onClick = { showToken = !showToken }, modifier = Modifier.focusProperties { canFocus = false }) {
                             Icon(if (showToken) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
-                                if (showToken) "Hide token" else "Show token", tint = TextMuted)
+                                if (showToken) "Hide token" else "Show token", tint = InkMuted)
                         }
                     },
                     modifier = Modifier.fillMaxWidth(), colors = fieldColors,
                 )
                 Text("Your token is stored encrypted on our server and never shown again.",
-                    color = TextMuted, style = MaterialTheme.typography.labelMedium)
+                    color = InkMuted, style = MaterialTheme.typography.labelMedium)
                 if (reconnecting == null) ClarityProjectIdField(clarityId, { clarityId = it }, !connecting, fieldColors, onDone = submit)
                 error?.let { Text(it, color = Bad, style = MaterialTheme.typography.bodyMedium) }
             }
@@ -151,15 +156,15 @@ fun ConnectProjectDialog(
             TextButton(onClick = submit, enabled = !connecting) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (connecting) {
-                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = Neon)
-                        Text("Checking…", Modifier.padding(start = 8.dp), color = Neon)
+                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = Accent)
+                        Text("Checking…", Modifier.padding(start = 8.dp), color = Accent)
                     } else {
-                        Text(if (reconnecting != null) "Reconnect" else "Connect", color = Neon, fontWeight = FontWeight.Bold)
+                        Text(if (reconnecting != null) "Reconnect" else "Connect", color = Accent, fontWeight = FontWeight.Bold)
                     }
                 }
             }
         },
-        dismissButton = { TextButton(onClick = onDismiss, enabled = !connecting) { Text("Cancel", color = TextMuted) } },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !connecting) { Text("Cancel", color = InkMuted) } },
     )
 }
 
@@ -169,11 +174,12 @@ internal fun ClarityProjectIdField(
     value: String, onValueChange: (String) -> Unit, enabled: Boolean, colors: TextFieldColors, onDone: () -> Unit,
 ) {
     OutlinedTextField(
+        shape = GlassShapes.Control,
         value = value, onValueChange = { onValueChange(it.trim().take(32)) }, singleLine = true, enabled = enabled,
         label = { Text("Clarity project ID (optional)") }, placeholder = { Text("e.g. k3x9abc12d") },
         supportingText = {
             Text("From your Clarity URL: clarity.microsoft.com/projects/view/<ID>/… Lets you jump to session recordings.",
-                color = TextMuted)
+                color = InkMuted)
         },
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii, autoCorrectEnabled = false, imeAction = ImeAction.Done),
         keyboardActions = KeyboardActions(onDone = { onDone() }),

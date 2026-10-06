@@ -32,6 +32,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import com.clarifiai.app.billing.PlanOffer
 import com.clarifiai.app.data.Tier
 
@@ -63,34 +67,35 @@ fun PaywallSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        containerColor = Navy,
-        contentColor = TextPrimary,
+        containerColor = SheetColor,
+        contentColor = Ink,
+        shape = SheetShape,
     ) {
         Column(
             Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).navigationBarsPadding(),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Text("Upgrade your plan", style = MaterialTheme.typography.titleLarge)
-            Text(paywall.reason, color = TextMuted, style = MaterialTheme.typography.bodyMedium)
+            Text(paywall.reason, color = InkMuted, style = MaterialTheme.typography.bodyMedium)
 
             PLANS.forEach { plan ->
                 val offer = offers.firstOrNull { it.tier == plan.tier }
                 val isCurrent = plan.tier == currentTier
                 val highlight = plan.tier == paywall.requiredTier
-                Card(
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = Surface1),
-                    border = BorderStroke(if (highlight) 1.5.dp else 1.dp, if (highlight) Neon else Border),
+                Column(
+                    Modifier.fillMaxWidth().clip(GlassShapes.Tile).background(Color.White)
+                        .border(if (highlight) 1.5.dp else 0.8.dp, if (highlight) Accent else Hairline, GlassShapes.Tile)
+                        .padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                             Column {
                                 Text(plan.tier.label(), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                                Text(plan.tagline, color = TextMuted, style = MaterialTheme.typography.labelMedium)
+                                Text(plan.tagline, color = InkMuted, style = MaterialTheme.typography.labelMedium)
                             }
                             Text(
                                 if (plan.tier == Tier.FREE) "Free" else offer?.let { "${it.price}/mo" } ?: "-",
-                                color = Neon, fontWeight = FontWeight.Bold,
+                                color = Accent, fontWeight = FontWeight.Bold,
                             )
                         }
                         Spacer(Modifier.height(4.dp))
@@ -105,20 +110,17 @@ fun PaywallSheet(
                             isCurrent -> OutlinedButton(onClick = {}, enabled = false, modifier = Modifier.fillMaxWidth()) { Text("Current plan") }
                             plan.tier.ordinal < currentTier.ordinal -> Unit
                             offer == null -> OutlinedButton(onClick = {}, enabled = false, modifier = Modifier.fillMaxWidth()) { Text("Unavailable") }
-                            else -> Button(
-                                onClick = { onSelect(offer) },
-                                modifier = Modifier.fillMaxWidth(),
-                                colors = ButtonDefaults.buttonColors(containerColor = Neon, contentColor = Navy),
-                            ) { Text("Choose ${plan.tier.label()}", fontWeight = FontWeight.Bold) }
+                            else -> AccentPillButton(onClick = { onSelect(offer) }, modifier = Modifier.fillMaxWidth()) {
+                                Text("Choose ${plan.tier.label()}", style = MaterialTheme.typography.labelLarge)
+                            }
                         }
-                    }
                 }
             }
 
-            TextButton(onClick = onRestore, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("Restore purchases", color = Neon) }
+            TextButton(onClick = onRestore, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("Restore purchases", color = Accent) }
             Text(
                 "Subscriptions renew monthly through Google Play and can be cancelled anytime in the Play Store.",
-                color = TextMuted, style = MaterialTheme.typography.labelMedium,
+                color = InkMuted, style = MaterialTheme.typography.labelMedium,
             )
             Spacer(Modifier.height(24.dp))
         }

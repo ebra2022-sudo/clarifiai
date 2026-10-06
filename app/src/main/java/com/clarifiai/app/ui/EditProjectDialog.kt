@@ -51,11 +51,13 @@ fun EditProjectDialog(
         onDismissRequest = onDismiss,
         modifier = Modifier.imePadding(),
         properties = DialogProperties(dismissOnClickOutside = false, decorFitsSystemWindows = false),
-        containerColor = Surface1,
+        containerColor = SheetColor,
+        shape = DialogShape,
         title = { Text("Edit project") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutlinedTextField(
+                    shape = GlassShapes.Control,
                     value = name, onValueChange = { name = it.take(40) }, singleLine = true, enabled = !saving,
                     label = { Text("Project name") },
                     keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, imeAction = ImeAction.Next),
@@ -68,11 +70,11 @@ fun EditProjectDialog(
         confirmButton = {
             TextButton(onClick = save, enabled = !saving && name.isNotBlank()) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (saving) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = Neon)
-                    Text("Save", Modifier.padding(start = if (saving) 8.dp else 0.dp), color = Neon, fontWeight = FontWeight.Bold)
+                    if (saving) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = Accent)
+                    Text("Save", Modifier.padding(start = if (saving) 8.dp else 0.dp), color = Accent, fontWeight = FontWeight.Bold)
                 }
             }
         },
-        dismissButton = { TextButton(onClick = onDismiss, enabled = !saving) { Text("Cancel", color = TextMuted) } },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !saving) { Text("Cancel", color = InkMuted) } },
     )
 }
