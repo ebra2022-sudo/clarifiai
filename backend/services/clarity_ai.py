@@ -16,6 +16,7 @@ import httpx
 
 from config import Settings
 from models import AuditRequest, Timeframe
+from services.projects import ClaritySource, TokenError, TokenVault
 from services.storage import Storage
 from services.tiers import TierPolicy, required_tier
 
@@ -41,6 +42,13 @@ SYSTEM_PROMPT = "Respond only with the requested Markdown report. No preamble, n
 ROADMAP_MARKER = "### 🚀"
 
 
+# Tells the model what it did NOT see, so it doesn't claim to have watched sessions. Clarity's export API returns
+# aggregated metrics only; recordings and heatmaps stay in the Clarity dashboard (the app links to them).
+DATA_SCOPE = ("Aggregated Microsoft Clarity Data Export metrics only. Session recordings, heatmaps and "
+              "element-level click targets are not available to this analysis. Where a finding needs visual "
+              "confirmation, name the page or screen whose recordings the team should review in Clarity.")
+
+
 class AuditError(Exception):
     def __init__(self, status: int, code: str, message: str, required_tier: str | None = None) -> None:
         super().__init__(message)
@@ -58,6 +66,25 @@ TRACKED_METRICS = {
     "Traffic", "DeadClickCount", "RageClickCount", "QuickbackClick",
     "ExcessiveScroll", "ScriptErrorCount", "ErrorClickCount",
 }
+FRICTION_METRICS = TRACKED_METRICS - {"Traffic"}
+
+# Clarity's mobile-app SDK reports taps and app errors under different names. Map them onto the web metrics so the
+# KPI engine works for both; the payload's `platform` tells Claude which one it is looking at.
+MOBILE_METRICS = {
+    "DeadTapCount": "DeadClickCount",
+    "RageTapCount": "RageClickCount",
+    "ApplicationErrorCount": "ScriptErrorCount",
+}
+
+# Aggregate {name, sessionsCount} blocks that come with every response. Kept as audience context for Claude.
+# (Web "PopularPages" is left out: it carries full URLs, and per-page friction is already covered by the URL rows.)
+CONTEXT_BLOCKS = {
+    "Device": "devices", "OS": "operating_systems", "Browser": "browsers",
+    "Country": "countries", "CountryRegion": "countries", "Country/Region": "countries",
+    "PopularScreens": "popular_screens",
+}
+CTX = "ctx:"  # key prefix for context blocks inside a normalised payload
+MOBILE_MARKER = CTX + "Platform"
 
 
 def _int(v: Any) -> int:
@@ -85,11 +112,19 @@ def normalize(raw: list[dict[str, Any]], dimension: str) -> dict[str, dict[str, 
     """Clarity response -> {metric: {dimension_value: {numeric fields}}}. Whitelist only."""
     out: dict[str, dict[str, dict[str, int]]] = {}
     for block in raw:
-        name = block.get("metricName")
+        # Responses use "DeadClickCount"; Microsoft's docs spell it "Dead Click Count". Accept both.
+        name = str(block.get("metricName") or "").replace(" ", "")
+        infos = [i for i in block.get("information") or [] if isinstance(i, dict)]
+        if name in MOBILE_METRICS:
+            out.setdefault(MOBILE_MARKER, {"mobile_app": {"seen": 1}})
+            name = MOBILE_METRICS[name]
+        if name in CONTEXT_BLOCKS or name == "EngagementTime":
+            _add_context(out, name, infos)
+            continue
         if name not in TRACKED_METRICS:
             continue
         rows = out.setdefault(name, {})
-        for info in block.get("information") or []:
+        for info in infos:
             if not isinstance(info, dict):
                 continue
             dim = _dim_value(info, dimension)
@@ -100,10 +135,58 @@ def normalize(raw: list[dict[str, Any]], dimension: str) -> dict[str, dict[str, 
                 })
             else:
                 _add(rows, dim, {
-                    "sessions": _int(info.get("sessionsCount")),
-                    "pageviews": _int(info.get("pagesViews") or info.get("pageViews")),
+                    "sessions": _affected_sessions(info),
+                    "pageviews": _int(info.get("pagesViews") or info.get("pageViews") or info.get("screensViews")),
                     "total": _int(info.get("subTotal")),
                 })
+    return out
+
+
+def _affected_sessions(info: dict[str, Any]) -> int:
+    """Sessions that hit the metric.
+
+    In friction blocks `sessionsCount` is the total for that row and `sessionsWithMetricPercentage` the share
+    affected (e.g. 25 sessions at 8% = 2 sessions with dead taps). Older payloads without the percentage are
+    taken at face value.
+    """
+    total = _int(info.get("sessionsCount"))
+    pct = info.get("sessionsWithMetricPercentage")
+    if pct is None:
+        return total
+    try:
+        return round(total * float(pct) / 100)
+    except (TypeError, ValueError):
+        return total
+
+
+def _add_context(out: dict[str, Any], name: str, infos: list[dict[str, Any]]) -> None:
+    if name == "EngagementTime":
+        for info in infos:
+            _add(out.setdefault(CTX + name, {}), "(all)",
+                 {"total_time": _int(info.get("totalTime")), "active_time": _int(info.get("activeTime"))})
+        return
+    rows = out.setdefault(CTX + CONTEXT_BLOCKS[name], {})
+    for info in infos:
+        label = str(info.get("name") or "").strip()[:60]
+        if label:
+            _add(rows, label, {"sessions": _int(info.get("sessionsCount"))})
+
+
+def is_mobile(norm: dict[str, Any]) -> bool:
+    return MOBILE_MARKER in norm
+
+
+def audience(norm: dict[str, Any], limit: int = 8) -> dict[str, Any]:
+    """Aggregate context (top screens, devices, OS, countries, engagement) with names scrubbed of PII."""
+    out: dict[str, Any] = {}
+    for key, rows in norm.items():
+        if not key.startswith(CTX) or key in (MOBILE_MARKER, CTX + "EngagementTime"):
+            continue
+        ranked = sorted(rows.items(), key=lambda kv: kv[1].get("sessions", 0), reverse=True)[:limit]
+        out[key[len(CTX):]] = [{"name": scrub_text(n), "sessions": v.get("sessions", 0)} for n, v in ranked]
+    eng = norm.get(CTX + "EngagementTime", {}).get("(all)")
+    if eng:
+        out["engagement_time"] = eng
     return out
 
 
@@ -155,7 +238,7 @@ def compute_kpis(norm: dict[str, Any]) -> dict[str, Any]:
 
     sessions = s("Traffic", "sessions")
     if sessions <= 0:
-        sessions = max([s(m, "sessions") for m in norm if m != "Traffic"] or [0])
+        sessions = max([s(m, "sessions") for m in norm if m in FRICTION_METRICS] or [0])
 
     def rate(metric: str) -> float:
         return min(1.0, s(metric, "sessions") / sessions) if sessions else 0.0
@@ -178,12 +261,15 @@ def compute_kpis(norm: dict[str, Any]) -> dict[str, Any]:
 def top_targets(norm: dict[str, Any], limit: int) -> list[dict[str, Any]]:
     agg: dict[str, dict[str, int]] = {}
     dims: set[str] = set()
-    for rows in norm.values():
-        dims.update(rows)
+    for metric, rows in norm.items():
+        if metric in TRACKED_METRICS:
+            dims.update(rows)
     dims.discard("(all)")
     for dim in dims:
         t = agg.setdefault(sanitize_path(dim), {})
         for metric, rows in norm.items():
+            if metric not in TRACKED_METRICS:
+                continue
             r = rows.get(dim)
             if not r:
                 continue
@@ -228,17 +314,27 @@ class ClarityClient:
     def __init__(self, settings: Settings, storage: Storage, http: httpx.AsyncClient) -> None:
         self._s, self._storage, self._http = settings, storage, http
 
-    async def fetch_live(self, project_id: str, num_days: int, dimension: str) -> list[dict[str, Any]]:
-        key = f"{project_id}:{num_days}:{dimension}"
-        cached = await self._storage.cache_get(key, self._s.cache_ttl_seconds)
+    def requests_allowed(self, for_snapshot: bool = False) -> int:
+        """User-triggered fetches leave `clarity_snapshot_reserve` requests for the nightly snapshot."""
+        reserve = 0 if for_snapshot else self._s.clarity_snapshot_reserve
+        return max(0, self._s.clarity_daily_limit - reserve)
+
+    async def fetch_live(self, source: ClaritySource, num_days: int, dimension: str,
+                         for_snapshot: bool = False, fresh: bool = False) -> list[dict[str, Any]]:
+        """`fresh` skips the cache read, e.g. to prove a new token works rather than reuse another token's data."""
+        key = f"{source.key}:{num_days}:{dimension}"
+        cached = None if fresh else await self._storage.cache_get(key, self._s.cache_ttl_seconds)
         if cached is not None:
             return cached
-        token = self._s.token_for(project_id)
-        if not token:
-            raise AuditError(404, "PROJECT_NOT_CONFIGURED", "No Clarity API token is configured for this project.")
+        today = utc_today()
+        # Count our own calls so we stop before Microsoft's per-project daily limit instead of burning a request on a 429.
+        if not await self._storage.clarity_try_spend(source.key, today, self.requests_allowed(for_snapshot)):
+            raise AuditError(429, "CLARITY_DAILY_BUDGET",
+                             f"This project has used its {self._s.clarity_daily_limit} Clarity data requests for today "
+                             "(a Microsoft limit). Cached reports still work; new data is available after 00:00 UTC.")
         url = f"{self._s.clarity_base_url}/project-live-insights"
         params = {"numOfDays": str(num_days), "dimension1": dimension}
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        headers = {"Authorization": f"Bearer {source.token}", "Content-Type": "application/json"}
         for attempt in range(3):
             try:
                 r = await self._http.get(url, params=params, headers=headers)
@@ -258,6 +354,7 @@ class ClarityClient:
             if r.status_code in (401, 403):
                 raise AuditError(502, "CLARITY_AUTH", "Clarity rejected the API token for this project.")
             if r.status_code == 429:
+                await self._storage.clarity_mark_exhausted(source.key, today, self._s.clarity_daily_limit)
                 raise AuditError(429, "CLARITY_RATE_LIMIT",
                                  "Clarity's export quota (10 requests/project/day) is exhausted. Try again tomorrow.")
             if r.status_code >= 500:
@@ -338,8 +435,10 @@ class PreparedAudit:
 
 
 class AuditService:
-    def __init__(self, settings: Settings, storage: Storage, clarity: ClarityClient, claude: ClaudeService) -> None:
+    def __init__(self, settings: Settings, storage: Storage, clarity: ClarityClient, claude: ClaudeService,
+                 vault: TokenVault) -> None:
         self._s, self._storage, self._clarity, self._claude = settings, storage, clarity, claude
+        self._vault = vault
 
     @staticmethod
     def resolve_range(req: AuditRequest) -> tuple[date, date, int]:
@@ -357,29 +456,40 @@ class AuditService:
                              f"The {req.timeframe.value.replace('_', ' ').title()} range requires the {need.value.title()} plan.",
                              need.value)
 
-    async def prepare(self, req: AuditRequest, policy: TierPolicy) -> PreparedAudit:
+    async def _live_url(self, source: ClaritySource, span: int, notes: list[str]) -> dict[str, Any]:
+        """Live URL metrics; when today's Clarity budget is spent, fall back to today's stored snapshot."""
+        today = utc_today()
+        try:
+            norm = normalize(await self._clarity.fetch_live(source, span, "URL"), "URL")
+        except AuditError as exc:
+            snaps = await self._storage.get_snapshots(source.key, today, today) if span == 1 else []
+            if exc.code not in ("CLARITY_DAILY_BUDGET", "CLARITY_RATE_LIMIT") or not snaps:
+                raise
+            notes.append("Clarity's daily request limit is reached for this project, so this report uses data "
+                         "saved earlier today.")
+            return snaps[0][1]
+        if span == 1:
+            await self._storage.save_snapshot(source.key, today, norm)
+        return norm
+
+    async def prepare(self, req: AuditRequest, policy: TierPolicy, source: ClaritySource) -> PreparedAudit:
         start, end, span = self.resolve_range(req)
         today, notes = utc_today(), []
-        pid = req.project_id
         device_norm = None
 
         if end == today and span <= 3:
-            raw = await self._clarity.fetch_live(pid, span, "URL")
-            norm = normalize(raw, "URL")
-            if span == 1:
-                await self._storage.save_snapshot(pid, today, norm)
+            norm = await self._live_url(source, span, notes)
             covered = span
-            if policy.device_breakdown:
+            if policy.device_breakdown and not is_mobile(norm):
                 try:
-                    device_norm = normalize(await self._clarity.fetch_live(pid, span, "Device"), "Device")
+                    device_norm = normalize(await self._clarity.fetch_live(source, span, "Device"), "Device")
                 except AuditError as exc:
                     notes.append(f"Device breakdown unavailable: {exc.message}")
         else:
-            snaps = await self._storage.get_snapshots(pid, start, end)
+            snaps = await self._storage.get_snapshots(source.key, start, end)
             if not snaps:
-                raw = await self._clarity.fetch_live(pid, 1, "URL")
-                norm1 = normalize(raw, "URL")
-                await self._storage.save_snapshot(pid, today, norm1)
+                norm1 = await self._live_url(source, 1, notes)
+                await self._storage.save_snapshot(source.key, today, norm1)
                 snaps = [(today, norm1)]
                 notes.append("History tracking just started for this project; only the last 24h is available so far.")
             norm = merge([n for _, n in snaps])
@@ -387,24 +497,38 @@ class AuditService:
             if covered < span:
                 notes.append(f"Covers {covered} of {span} requested days. Clarity only exposes the last 3 days, "
                              "so longer ranges are assembled from daily snapshots recorded by this server.")
-            if policy.device_breakdown:
+            if policy.device_breakdown and not is_mobile(norm):
                 notes.append("Device breakdown is only available for ranges of 3 days or less.")
 
         kpis = compute_kpis(norm)
         if kpis["total_sessions"] == 0 and not any(norm.values()):
             raise AuditError(404, "NO_DATA", "Clarity returned no data for this project and period.")
 
+        mobile = is_mobile(norm)
+        if mobile:
+            granularity = ("app-wide totals: Clarity's export API does not break mobile-app friction down by screen; "
+                           "rage/dead 'clicks' are taps and script errors are application errors")
+        else:
+            granularity = "page_path (CSS selectors are not exposed by Clarity's export API)"
         payload: dict[str, Any] = {
             "report_context": {
+                "platform": "mobile_app" if mobile else "website",
                 "timeframe": req.timeframe.value, "period_start": start.isoformat(), "period_end": end.isoformat(),
-                "days_covered": covered, "friction_target_granularity": "page_path (CSS selectors are not exposed by Clarity's export API)",
+                "days_covered": covered, "friction_target_granularity": granularity,
+                "data_scope": DATA_SCOPE,
                 "data_notes": notes,
             },
             "totals": kpis,
             "top_friction_targets": top_targets(norm, policy.top_elements),
         }
+        context = audience(norm)
+        devices = context.pop("devices", None)
+        if context:
+            payload["audience"] = context
         if device_norm:
             payload["device_breakdown"] = device_breakdown(device_norm)
+        elif policy.device_breakdown and devices:
+            payload["device_breakdown"] = [{"device": d["name"], "sessions": d["sessions"]} for d in devices]
         return PreparedAudit(payload=payload, kpis=kpis, notes=notes, days_covered=covered)
 
     async def events(self, prepared: PreparedAudit, policy: TierPolicy, usage: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
@@ -440,12 +564,34 @@ class AuditService:
         now = datetime.now(timezone.utc)
         if now.hour < self._s.snapshot_hour_utc:
             return
-        for pid in await self._storage.tracked_projects():
-            if await self._storage.has_snapshot(pid, now.date()):
+        for source in await self.snapshot_sources():
+            if await self._storage.has_snapshot(source.key, now.date()):
                 continue
             try:
-                raw = await self._clarity.fetch_live(pid, 1, "URL")
-                await self._storage.save_snapshot(pid, now.date(), normalize(raw, "URL"))
-                log.info("Saved daily snapshot for %s", pid)
+                raw = await self._clarity.fetch_live(source, 1, "URL", for_snapshot=True)
+                await self._storage.save_snapshot(source.key, now.date(), normalize(raw, "URL"))
+                log.info("Saved daily snapshot for %s", source.key)
             except AuditError as exc:
-                log.warning("Snapshot failed for %s: %s", pid, exc.message)
+                log.warning("Snapshot failed for %s: %s", source.key, exc.message)
+                if exc.code == "CLARITY_AUTH":
+                    await self._storage.mark_needs_reauth(source.key)
+
+    async def snapshot_sources(self) -> list[ClaritySource]:
+        sources: list[ClaritySource] = []
+        if self._vault.configured:
+            for key, token_enc in await self._storage.connection_sources():
+                try:
+                    sources.append(ClaritySource(key, self._vault.decrypt(token_enc)))
+                except TokenError as exc:
+                    log.warning("Skipping snapshot for %s: %s", key, exc)
+        connection_ids = {c for c in await self._storage.tracked_projects() if c.startswith("cp_")}
+        for pid in await self._storage.tracked_projects():
+            token = self._s.token_for(pid)
+            if pid not in connection_ids and token:
+                sources.append(env_source(pid, token))
+        return sources
+
+
+def env_source(project_id: str, token: str) -> ClaritySource:
+    """A project configured by the operator in CLARITY_TOKENS_JSON / CLARITY_API_TOKEN."""
+    return ClaritySource(f"env:{project_id}", token)
