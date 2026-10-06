@@ -74,6 +74,8 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.billing.ktx)
     implementation(libs.markdown.renderer.m3)
+    implementation(libs.haze)
+    implementation(libs.haze.glass)
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
