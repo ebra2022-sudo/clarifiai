@@ -92,6 +92,51 @@ data class VerifyRequestDto(
     @SerialName("product_id") val productId: String,
 )
 
+@Serializable
+data class ClarityRequests(val used: Int = 0, val limit: Int = 0)
+
+/** A Clarity project the user connected. The token stays on the server; the app only sees this summary. */
+@Serializable
+data class ProjectDto(
+    val id: String,
+    val name: String,
+    @SerialName("created_at") val createdAt: String = "",
+    /** "active", or "needs_reauth" when Clarity stopped accepting the saved token. */
+    val status: String = "active",
+    /** Clarity's own project ID, used only to open recordings in the Clarity dashboard. */
+    @SerialName("clarity_project_id") val clarityProjectId: String? = null,
+    @SerialName("token_expires_at") val tokenExpiresAt: String? = null,
+    @SerialName("clarity_requests") val clarityRequests: ClarityRequests = ClarityRequests(),
+) {
+    val needsReauth: Boolean get() = status == "needs_reauth"
+
+    /** Clarity's session recordings for this project. The export API can't return recordings, so we link out. */
+    val recordingsUrl: String? get() = clarityProjectId?.let { "https://clarity.microsoft.com/projects/view/$it/impressions" }
+}
+
+@Serializable
+data class ProjectsResponse(
+    val projects: List<ProjectDto> = emptyList(),
+    @SerialName("max_projects") val maxProjects: Int = 1,
+)
+
+@Serializable
+data class ConnectProjectDto(
+    val name: String,
+    @SerialName("clarity_token") val clarityToken: String,
+    @SerialName("clarity_project_id") val clarityProjectId: String? = null,
+)
+
+/** Null fields are left out of the JSON, so the server leaves them unchanged. */
+@Serializable
+data class UpdateProjectDto(
+    val name: String? = null,
+    @SerialName("clarity_project_id") val clarityProjectId: String? = null,
+)
+
+@Serializable
+data class ReconnectProjectDto(@SerialName("clarity_token") val clarityToken: String)
+
 sealed interface AuditEvent {
     data class Meta(val kpis: Kpis, val notes: List<String>, val daysCovered: Int, val usage: Usage?) : AuditEvent
     data class Delta(val text: String) : AuditEvent
@@ -139,6 +184,29 @@ class ApiClient(context: Context) {
     suspend fun verifySubscription(purchaseToken: String, productId: String): Entitlements = withContext(Dispatchers.IO) {
         val body = AppJson.encodeToString(VerifyRequestDto(purchaseToken, productId)).toRequestBody(jsonType)
         execute(request("api/v1/subscription/verify").post(body).build()) { AppJson.decodeFromString(it.body.string()) }
+    }
+
+    suspend fun projects(): ProjectsResponse = withContext(Dispatchers.IO) {
+        execute(request("api/v1/projects").get().build()) { AppJson.decodeFromString(it.body.string()) }
+    }
+
+    suspend fun connectProject(name: String, clarityToken: String, clarityProjectId: String?): ProjectDto = withContext(Dispatchers.IO) {
+        val body = AppJson.encodeToString(ConnectProjectDto(name, clarityToken, clarityProjectId)).toRequestBody(jsonType)
+        execute(request("api/v1/projects").post(body).build()) { AppJson.decodeFromString(it.body.string()) }
+    }
+
+    suspend fun updateProject(id: String, dto: UpdateProjectDto): ProjectDto = withContext(Dispatchers.IO) {
+        val body = AppJson.encodeToString(dto).toRequestBody(jsonType)
+        execute(request("api/v1/projects/$id").patch(body).build()) { AppJson.decodeFromString(it.body.string()) }
+    }
+
+    suspend fun reconnectProject(id: String, clarityToken: String): ProjectDto = withContext(Dispatchers.IO) {
+        val body = AppJson.encodeToString(ReconnectProjectDto(clarityToken)).toRequestBody(jsonType)
+        execute(request("api/v1/projects/$id/token").put(body).build()) { AppJson.decodeFromString(it.body.string()) }
+    }
+
+    suspend fun deleteProject(id: String): Unit = withContext(Dispatchers.IO) {
+        execute(request("api/v1/projects/$id").delete().build()) { }
     }
 
     fun streamAudit(dto: AuditRequestDto): Flow<AuditEvent> = flow {
