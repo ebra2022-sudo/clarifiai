@@ -46,3 +46,23 @@ class AuditRequest(BaseModel):
 class SubscriptionVerifyRequest(BaseModel):
     purchase_token: str = Field(min_length=10, max_length=4096)
     product_id: str = Field(min_length=1, max_length=128)
+
+
+# Clarity's own project ID, as in clarity.microsoft.com/projects/view/<id>/dashboard.
+CLARITY_PROJECT_ID = r"^[A-Za-z0-9]{4,32}$"
+
+
+class ConnectProjectRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=40)
+    clarity_token: str = Field(min_length=20, max_length=8192)
+    clarity_project_id: str | None = Field(default=None, pattern=CLARITY_PROJECT_ID)
+
+
+class UpdateProjectRequest(BaseModel):
+    """Rename a project or set its Clarity project ID ("" clears it). Omitted fields are left as they are."""
+    name: str | None = Field(default=None, min_length=1, max_length=40)
+    clarity_project_id: str | None = Field(default=None, pattern=r"^(?:[A-Za-z0-9]{4,32})?$")
+
+
+class ReconnectProjectRequest(BaseModel):
+    clarity_token: str = Field(min_length=20, max_length=8192)
