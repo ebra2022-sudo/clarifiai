@@ -1,8 +1,16 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
 }
+
+// `clarity.baseUrl` / `clarity.devTier` come from -P flags, gradle.properties or local.properties (git-ignored).
+val localProps = Properties().apply {
+    rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
+}
+fun prop(name: String): String? = (project.findProperty(name) as String?) ?: localProps.getProperty(name)
 
 android {
     namespace = "com.clarifiai.app"
@@ -20,7 +28,7 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // Backend base URL (must end with "/").
-        buildConfigField("String", "BASE_URL", "\"https://api.your-domain.com/\"")
+        buildConfigField("String", "BASE_URL", "\"${prop("clarity.baseUrl") ?: "https://clarifiai-api.onrender.com/"}\"")
         // Debug builds only: lets you test paid tiers without Google Play. Requires DEV_ALLOW_TIER_OVERRIDE=true
         // on the backend. One of "", "FREE", "PRO", "MAX".
         buildConfigField("String", "DEV_TIER", "\"\"")
@@ -28,9 +36,10 @@ android {
 
     buildTypes {
         debug {
-            // 10.0.2.2 is the host machine from the Android emulator.
-            buildConfigField("String", "BASE_URL", "\"http://10.0.2.2:8000/\"")
-            buildConfigField("String", "DEV_TIER", "\"${project.findProperty("clarity.devTier") ?: ""}\"")
+            // Default 10.0.2.2 is the host machine from the Android emulator. For a phone, set
+            // clarity.baseUrl=https://<your-service>.onrender.com/ in local.properties.
+            buildConfigField("String", "BASE_URL", "\"${prop("clarity.baseUrl") ?: "http://10.0.2.2:8000/"}\"")
+            buildConfigField("String", "DEV_TIER", "\"${prop("clarity.devTier") ?: ""}\"")
         }
         release {
             optimization {
