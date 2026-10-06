@@ -7,6 +7,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -30,13 +32,17 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.DialogProperties
 import com.clarifiai.app.data.ProjectDto
 
 private const val CLARITY_EXPORT_DOCS =
@@ -66,9 +72,20 @@ fun ConnectProjectDialog(
     var showToken by rememberSaveable { mutableStateOf(false) }
     val uriHandler = LocalUriHandler.current
     val fieldColors = clarityFieldColors()
+    val focus = LocalFocusManager.current
+    val submit = {
+        focus.clearFocus() // hides the keyboard
+        onConnect(name, token, clarityId)
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        // Shrink above the keyboard so Connect stays visible, and don't drop a half-typed token on a stray tap.
+        modifier = Modifier.imePadding(),
+        properties = DialogProperties(
+            dismissOnClickOutside = name.isEmpty() && token.isEmpty() && clarityId.isEmpty(),
+            decorFitsSystemWindows = false,
+        ),
         containerColor = Surface1,
         title = { Text(if (reconnecting != null) "Reconnect ${reconnecting.name}" else "Connect Clarity project") },
         text = {
@@ -101,7 +118,7 @@ fun ConnectProjectDialog(
                     OutlinedTextField(
                         value = name, onValueChange = { name = it.take(40) }, singleLine = true, enabled = !connecting,
                         label = { Text("Project name") }, placeholder = { Text("My website") },
-                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
+                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, imeAction = ImeAction.Next),
                         modifier = Modifier.fillMaxWidth(), colors = fieldColors,
                     )
                 }
@@ -109,9 +126,15 @@ fun ConnectProjectDialog(
                     value = token, onValueChange = { token = it.trim() }, singleLine = true, enabled = !connecting,
                     label = { Text("Clarity API token") },
                     visualTransformation = if (showToken) VisualTransformation.None else PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
+                    // New projects: Next goes to the optional project ID. Reconnecting: the token is the only field, so Done submits.
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Password, autoCorrectEnabled = false,
+                        imeAction = if (reconnecting == null) ImeAction.Next else ImeAction.Done,
+                    ),
+                    keyboardActions = KeyboardActions(onDone = { submit() }),
                     trailingIcon = {
-                        IconButton(onClick = { showToken = !showToken }) {
+                        // Tap-only: kept out of keyboard focus order so Next goes to the next field, not this toggle.
+                        IconButton(onClick = { showToken = !showToken }, modifier = Modifier.focusProperties { canFocus = false }) {
                             Icon(if (showToken) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
                                 if (showToken) "Hide token" else "Show token", tint = TextMuted)
                         }
@@ -120,12 +143,12 @@ fun ConnectProjectDialog(
                 )
                 Text("Your token is stored encrypted on our server and never shown again.",
                     color = TextMuted, style = MaterialTheme.typography.labelMedium)
-                if (reconnecting == null) ClarityProjectIdField(clarityId, { clarityId = it }, !connecting, fieldColors)
+                if (reconnecting == null) ClarityProjectIdField(clarityId, { clarityId = it }, !connecting, fieldColors, onDone = submit)
                 error?.let { Text(it, color = Bad, style = MaterialTheme.typography.bodyMedium) }
             }
         },
         confirmButton = {
-            TextButton(onClick = { onConnect(name, token, clarityId) }, enabled = !connecting) {
+            TextButton(onClick = submit, enabled = !connecting) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (connecting) {
                         CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = Neon)
@@ -143,7 +166,7 @@ fun ConnectProjectDialog(
 /** Optional: Clarity's own project ID, so the app can open session recordings (which the export API can't return). */
 @Composable
 internal fun ClarityProjectIdField(
-    value: String, onValueChange: (String) -> Unit, enabled: Boolean, colors: TextFieldColors,
+    value: String, onValueChange: (String) -> Unit, enabled: Boolean, colors: TextFieldColors, onDone: () -> Unit,
 ) {
     OutlinedTextField(
         value = value, onValueChange = { onValueChange(it.trim().take(32)) }, singleLine = true, enabled = enabled,
@@ -152,7 +175,8 @@ internal fun ClarityProjectIdField(
             Text("From your Clarity URL: clarity.microsoft.com/projects/view/<ID>/… Lets you jump to session recordings.",
                 color = TextMuted)
         },
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii, autoCorrectEnabled = false),
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii, autoCorrectEnabled = false, imeAction = ImeAction.Done),
+        keyboardActions = KeyboardActions(onDone = { onDone() }),
         modifier = Modifier.fillMaxWidth(), colors = colors,
     )
 }
