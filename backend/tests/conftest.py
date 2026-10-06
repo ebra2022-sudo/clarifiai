@@ -1,17 +1,32 @@
 from __future__ import annotations
 
+import base64
 import json
+import os
+import time
 from typing import Any, AsyncIterator, Callable
 
 import httpx
 import pytest
+from cryptography.fernet import Fernet
 
 from config import Settings
 from main import app
 from services.clarity_ai import AuditError, AuditService, ClarityClient
+from services.projects import TokenVault
 from services.storage import Storage
 
 DEVICE = "test-device-0001-abcd"
+# Set to a throwaway postgres:// URL to run the suite against Postgres instead of SQLite. Its data is wiped.
+TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "")
+
+
+def clarity_jwt(sub: str = "3497143025250713", **overrides) -> str:
+    """A token shaped like Clarity's data-export JWTs (signature is not checked locally)."""
+    enc = lambda d: base64.urlsafe_b64encode(json.dumps(d).encode()).decode().rstrip("=")
+    claims = {"iss": "clarity", "aud": "clarity.data-exporter", "scope": "Data.Export", "sub": sub,
+              "exp": int(time.time()) + 3600, **overrides}
+    return f"{enc({'alg': 'RS256', 'typ': 'JWT'})}.{enc(claims)}.signature"
 
 
 def clarity_payload(url: str = "https://shop.example.com/checkout?x=1", sessions: int = 100) -> list[dict[str, Any]]:
@@ -59,13 +74,19 @@ class ClarityMock:
 def settings(tmp_path) -> Settings:
     return Settings(
         anthropic_api_key="test", clarity_api_token="clarity-token",
-        database_path=str(tmp_path / "test.db"), dev_allow_tier_override=False,
+        database_path=str(tmp_path / "test.db"), database_url=TEST_DATABASE_URL, dev_allow_tier_override=False,
+        token_encryption_key=Fernet.generate_key().decode(),
     )
 
 
 @pytest.fixture
 async def storage(settings) -> AsyncIterator[Storage]:
-    s = Storage(settings.database_path)
+    if TEST_DATABASE_URL:  # start every test from an empty Postgres schema
+        import asyncpg
+        conn = await asyncpg.connect(TEST_DATABASE_URL)
+        await conn.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public")
+        await conn.close()
+    s = Storage(settings.database_url or settings.database_path)
     await s.init()
     yield s
     await s.close()
@@ -86,7 +107,10 @@ async def client(settings, storage, clarity_mock, claude) -> AsyncIterator[httpx
     clarity_http = httpx.AsyncClient(transport=httpx.MockTransport(clarity_mock))
     app.state.settings = settings
     app.state.storage = storage
-    app.state.audit = AuditService(settings, storage, ClarityClient(settings, storage, clarity_http), claude)  # type: ignore[arg-type]
+    vault = TokenVault(settings.token_encryption_key)
+    clarity = ClarityClient(settings, storage, clarity_http)
+    app.state.audit = AuditService(settings, storage, clarity, claude, vault)  # type: ignore[arg-type]
+    app.state.clarity, app.state.vault = clarity, vault
     app.state.billing = None
     # ASGITransport does not run the lifespan, so the state above is all the app sees.
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c:

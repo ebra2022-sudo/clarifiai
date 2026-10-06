@@ -126,10 +126,18 @@ async def test_clarity_auth_failure_refunds_audit(client, storage, clarity_mock)
     assert await usage_count(storage) == 0
 
 
-async def test_clarity_rate_limit_and_no_data(client, storage, clarity_mock):
+async def test_clarity_rate_limit_stops_further_calls_today(client, storage, clarity_mock):
     clarity_mock.handler = lambda req: httpx.Response(429)
     r = await client.post(AUDIT, json={"project_id": "p1", "timeframe": "TODAY"}, headers=headers())
     assert (r.status_code, r.json()["detail"]["code"]) == (429, "CLARITY_RATE_LIMIT")
+    calls = len(clarity_mock.requests)
+    r = await client.post(AUDIT, json={"project_id": "p1", "timeframe": "LAST_3_DAYS"}, headers=headers())
+    assert (r.status_code, r.json()["detail"]["code"]) == (429, "CLARITY_DAILY_BUDGET")
+    assert len(clarity_mock.requests) == calls  # no request wasted on a known-exhausted project
+    assert await usage_count(storage) == 0
+
+
+async def test_no_data(client, storage, clarity_mock):
     clarity_mock.handler = lambda req: httpx.Response(200, json=[])
     r = await client.post(AUDIT, json={"project_id": "p1", "timeframe": "LAST_3_DAYS"}, headers=headers())
     assert (r.status_code, r.json()["detail"]["code"]) == (404, "NO_DATA")

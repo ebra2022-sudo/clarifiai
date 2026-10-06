@@ -38,6 +38,17 @@ def test_normalize_aggregates_duplicate_dimension_values_and_handles_quirks():
     assert out["QuickbackClick"] == {}
 
 
+def test_normalize_uses_percentage_for_affected_sessions():
+    raw = [{"metricName": "DeadClickCount", "information": [
+        {"sessionsCount": 110, "sessionsWithMetricPercentage": 3.64, "subTotal": 9, "Url": "/a"}]}]
+    assert normalize(raw, "URL")["DeadClickCount"]["/a"]["sessions"] == 4
+
+
+def test_normalize_accepts_metric_names_with_spaces():
+    raw = [{"metricName": "Rage Click Count", "information": [{"sessionsCount": "2", "subTotal": "3", "Url": "/a"}]}]
+    assert normalize(raw, "URL") == {"RageClickCount": {"/a": {"sessions": 2, "pageviews": 0, "total": 3}}}
+
+
 def test_normalize_device_dimension():
     raw = [{"metricName": "Traffic", "information": [{"totalSessionCount": "9", "Device": "Mobile"}]}]
     assert normalize(raw, "Device") == {"Traffic": {"Mobile": {"sessions": 9, "users": 0}}}
@@ -170,3 +181,10 @@ def test_section_gate_without_marker_emits_everything_after_flush():
     out += g.flush()
     assert out == "hello world"
     assert not g.blocked
+
+
+async def test_payload_tells_claude_recordings_are_not_included(client, claude):
+    from tests.conftest import headers
+    r = await client.post("/api/v1/analytics/audit", json={"project_id": "demo", "timeframe": "TODAY"}, headers=headers())
+    assert r.status_code == 200
+    assert "recordings" in claude.calls[0]["report_context"]["data_scope"]
