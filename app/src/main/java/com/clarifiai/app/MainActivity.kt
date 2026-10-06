@@ -14,10 +14,10 @@ import com.clarifiai.app.ui.DashboardViewModel
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // The UI is always dark, so keep system bar icons light regardless of the device theme.
+        // The UI is always light (liquid glass), so keep system bar icons dark regardless of the device theme.
         enableEdgeToEdge(
-            statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
-            navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
+            statusBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT),
         )
         setContent {
             ClarityTheme {
