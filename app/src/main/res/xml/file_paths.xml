@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
     <cache-path name="reports" path="reports/" />
+    <!-- Saved reports (ReportStore), kept until the user deletes them -->
+    <files-path name="saved_reports" path="reports/" />
 </paths>
