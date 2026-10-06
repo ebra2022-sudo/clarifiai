@@ -4,6 +4,7 @@ services:
     name: clarifiai-api
     runtime: python
     plan: free
+    region: oregon
     rootDir: backend
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --proxy-headers
@@ -17,12 +18,21 @@ services:
       # Fernet key; generate once and never change it, or saved Clarity tokens can't be decrypted.
       - key: TOKEN_ENCRYPTION_KEY
         sync: false
-      # Free Postgres (Neon recommended). Without it the server falls back to SQLite on Render's
-      # ephemeral disk, which is wiped on every deploy and whenever the free instance sleeps.
+      # Render's disk is wiped on every deploy and whenever the free instance sleeps, so data lives in Postgres.
+      # Render's free Postgres expires after 30 days; to switch to Neon, replace this with your Neon URL.
       - key: DATABASE_URL
-        sync: false
+        fromDatabase:
+          name: clarifiai-db
+          property: connectionString
       - key: CLAUDE_MODEL
         value: claude-sonnet-5-5
       # Testing only: lets debug builds act as Pro/Max (PDF export, longer ranges). Set to false before launch.
       - key: DEV_ALLOW_TIER_OVERRIDE
         value: "true"
+
+databases:
+  - name: clarifiai-db
+    plan: free
+    region: oregon
+    databaseName: clarifiai
+    user: clarifiai
