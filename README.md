@@ -11,6 +11,8 @@ ClarifiAI/
 
 The Android app never talks to Clarity or Anthropic directly; all keys live on the backend.
 
+**Getting API keys and going live:** see [SETUP.md](SETUP.md).
+
 ## Backend
 
 ```bash
@@ -25,8 +27,10 @@ cp .env.example .env          # fill in ANTHROPIC_API_KEY and your Clarity token
 | Variable | Purpose |
 | --- | --- |
 | `ANTHROPIC_API_KEY`, `CLAUDE_MODEL` | Claude access and model name (default `claude-sonnet-5-5`). |
-| `CLARITY_API_TOKEN` / `CLARITY_TOKENS_JSON` | Single token, or per-project map `{"projectId": "token"}` (map wins). |
+| `TOKEN_ENCRYPTION_KEY` | Fernet key that encrypts users' connected Clarity tokens. Required for in-app connect. |
+| `CLARITY_API_TOKEN` / `CLARITY_TOKENS_JSON` | Optional operator-configured projects (single token, or `{"projectId": "token"}`). Users normally connect their own in the app. |
 | `DATABASE_PATH`, `CACHE_TTL_SECONDS`, `SNAPSHOT_HOUR_UTC` | SQLite file, Clarity cache TTL (default 3600s), hour after which the daily snapshot job runs. |
+| `DATABASE_URL` | Postgres URL for hosted deployments (used instead of `DATABASE_PATH` when set). Deploying to Render: see `SETUP.md`, Stage 2. |
 | `PLAY_PACKAGE_NAME`, `GOOGLE_SERVICE_ACCOUNT_FILE` | Play subscription verification. |
 | `DEV_ALLOW_TIER_OVERRIDE` | Testing only: accepts the `X-Dev-Tier` header. **Must stay `false` in production.** |
 
@@ -40,6 +44,11 @@ All requests need `X-Device-Id` (16–64 chars, alphanumeric or dash). Errors ar
 | `GET /health` | Liveness. |
 | `GET /api/v1/account/entitlements` | Tier, expiry, monthly usage and feature flags. |
 | `POST /api/v1/subscription/verify` | `{purchase_token, product_id}` → verifies with Google Play, upgrades the tier. |
+| `GET /api/v1/projects` | The device's saved Clarity projects, each with `status` (`active` / `needs_reauth`) and today's Clarity requests used. |
+| `POST /api/v1/projects` | `{name, clarity_token, clarity_project_id?}` → validates the token with Clarity, stores it encrypted, returns the project. |
+| `PATCH /api/v1/projects/{id}` | `{name?, clarity_project_id?}` → rename, or set the Clarity project ID used to link to recordings (`""` clears it). |
+| `PUT /api/v1/projects/{id}/token` | `{clarity_token}` → re-authenticates a project whose token was revoked or expired; keeps its name and history. |
+| `DELETE /api/v1/projects/{id}` | Deletes a project and its stored token. |
 | `POST /api/v1/analytics/audit` | `{project_id, timeframe, start_date?, end_date?}` → streams `application/x-ndjson`. |
 
 NDJSON events: `meta`, `delta…`, `locked` (Free only), then `done` or `error`. A failed or abandoned
@@ -82,5 +91,10 @@ Open the project root in Android Studio, or:
   project per day. Longer ranges are assembled from daily snapshots this server records, and coverage is
   reported in `meta.notes`. Responses are cached for `CACHE_TTL_SECONDS`.
 - Clarity exports by dimension (URL, Device…), not CSS selectors, so friction targets are page paths.
+- The export API has no session recordings or heatmaps. Reports say so (in the app, the PDF and the data sent to
+  Claude), and the app links to the project's recordings in Clarity when the user adds its Clarity project ID.
+- Saved projects are tied to the device ID too, so a reinstall also loses them (same fix as below).
+- Exported PDFs are kept on the device (app storage) under **Saved reports** until the user deletes them; they
+  aren't synced to the server.
 - Accounts are keyed by an install-generated device ID, so a reinstall resets the free quota. Add real auth
   (Firebase Auth / Play Integrity) before launch.
