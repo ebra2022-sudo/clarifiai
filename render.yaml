@@ -18,21 +18,13 @@ services:
       # Fernet key; generate once and never change it, or saved Clarity tokens can't be decrypted.
       - key: TOKEN_ENCRYPTION_KEY
         sync: false
-      # Render's disk is wiped on every deploy and whenever the free instance sleeps, so data lives in Postgres.
-      # Render's free Postgres expires after 30 days; to switch to Neon, replace this with your Neon URL.
+      # Supabase Postgres (Session pooler URI; IPv4, which Render needs). Render's disk is wiped on every deploy
+      # and whenever the free instance sleeps, so all data lives there.
       - key: DATABASE_URL
-        fromDatabase:
-          name: clarifiai-db
-          property: connectionString
+        sync: false
       - key: CLAUDE_MODEL
         value: claude-sonnet-5-5
       # Testing only: lets debug builds act as Pro/Max (PDF export, longer ranges). Set to false before launch.
       - key: DEV_ALLOW_TIER_OVERRIDE
         value: "true"
 
-databases:
-  - name: clarifiai-db
-    plan: free
-    region: oregon
-    databaseName: clarifiai
-    user: clarifiai
