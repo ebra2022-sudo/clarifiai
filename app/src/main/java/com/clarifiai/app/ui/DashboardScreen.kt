@@ -450,15 +450,11 @@ private fun ReconnectBanner(project: ProjectDto, onReconnect: (ProjectDto) -> Un
     }
 }
 
-/** Explains, before running, how much of a long range Clarity's 3-day limit and the saved history can cover. */
+/** Explains, before running, what a long or custom range is built from. */
 private fun historyNote(tf: Timeframe, project: ProjectDto?): String? {
     if (project == null || tf == Timeframe.TODAY || tf == Timeframe.LAST_3_DAYS) return null
-    val saved = when (project.historyDays) {
-        0 -> "No nightly history saved yet"
-        1 -> "1 day of history saved"
-        else -> "${project.historyDays} days of history saved" + (project.historySince?.let { " since $it" } ?: "")
-    }
-    return "Clarity only shares the last 3 days. Longer reports add the history ClarifiAI saves every night: $saved."
+    return "Totals, daily trends, audiences and session recordings come from Clarity for the whole range. " +
+        "Page-level friction detail covers the latest 3 days, and recordings older than about 30 days may no longer exist in Clarity."
 }
 
 private fun duration(seconds: Int): String = if (seconds < 60) "${seconds}s" else "%d:%02d".format(seconds / 60, seconds % 60)
