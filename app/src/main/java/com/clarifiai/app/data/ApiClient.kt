@@ -48,9 +48,6 @@ data class AuditRequestDto(
     val timeframe: String,
     @SerialName("start_date") val startDate: String? = null,
     @SerialName("end_date") val endDate: String? = null,
-    /** Base64 JPEG frames from session recordings or screenshots the user attached (max 12). */
-    @SerialName("recording_frames") val recordingFrames: List<String> = emptyList(),
-    @SerialName("recording_note") val recordingNote: String? = null,
 )
 
 @Serializable
@@ -147,6 +144,12 @@ data class UpdateProjectDto(
 
 @Serializable
 data class ReconnectProjectDto(@SerialName("clarity_token") val clarityToken: String)
+
+private val reviewedRecordingsNote = Regex("^Reviewed (\\d+) real session recordings")
+
+/** How many real Clarity session recordings the report reviewed, from the server's data notes. */
+fun reviewedRecordings(notes: List<String>): Int =
+    notes.firstNotNullOfOrNull { reviewedRecordingsNote.find(it)?.groupValues?.get(1)?.toIntOrNull() } ?: 0
 
 sealed interface AuditEvent {
     data class Meta(val kpis: Kpis, val notes: List<String>, val daysCovered: Int, val usage: Usage?) : AuditEvent

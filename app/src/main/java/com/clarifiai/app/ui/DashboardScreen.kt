@@ -92,9 +92,6 @@ import com.clarifiai.app.data.Timeframe
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.model.rememberMarkdownState
 import dev.chrisbanes.haze.rememberHazeState
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.PickVisualMediaRequest
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -115,9 +112,6 @@ fun DashboardScreen(vm: DashboardViewModel, activity: Activity) {
     val uriHandler = LocalUriHandler.current
     var showDatePicker by remember { mutableStateOf(false) }
     var projectToDelete by remember { mutableStateOf<ProjectDto?>(null) }
-    val pickRecordings = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(5)) { uris ->
-        vm.addRecordings(uris)
-    }
 
     LaunchedEffect(Unit) {
         vm.events.collect { ev ->
@@ -210,14 +204,7 @@ fun DashboardScreen(vm: DashboardViewModel, activity: Activity) {
                         historyNote = historyNote(state.timeframe, state.selectedProject),
                     )
                 }
-                item {
-                    RecordingsCard(
-                        recordings = state.recordings, attaching = state.attachingRecordings, note = state.recordingNote,
-                        onAdd = { pickRecordings.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) },
-                        onRemove = vm::removeRecording, onNoteChange = vm::setRecordingNote,
-                        modifier = Modifier.padding(horizontal = 16.dp),
-                    )
-                }
+
                 item {
                     ReportCard(
                         state, modifier = Modifier.padding(horizontal = 16.dp), onUpgrade = vm::openUpgrade, onRetry = vm::runAudit,
@@ -497,17 +484,18 @@ private fun ReportCard(
                 Text("Executive Backlog", Modifier.padding(start = 12.dp), style = MaterialTheme.typography.titleLarge, color = Ink)
             }
             if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth().clip(GlassShapes.Pill), color = Accent, trackColor = Hairline)
-            if (state.reportDaysCovered > 0 || state.reportFrames > 0) {
+            if (state.reportDaysCovered > 0 || state.reportRecordings > 0) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (state.reportDaysCovered > 0) {
                         val full = state.reportDaysCovered >= state.reportRequestedDays
                         Chip("Covers ${state.reportDaysCovered} of ${state.reportRequestedDays} day${if (state.reportRequestedDays == 1) "" else "s"}",
                             if (full) Good else Warn)
                     }
-                    if (state.reportFrames > 0) Chip("${state.reportFrames} recording frames", Accent)
+                    if (state.reportRecordings > 0) Chip("${state.reportRecordings} session recordings reviewed", Accent)
                 }
             }
-            state.notes.forEach { Text(it, color = Warn, style = MaterialTheme.typography.labelMedium) }
+            // Caveats only; the recordings count is shown as a chip above.
+            state.notes.filterNot { it.startsWith("Reviewed ") }.forEach { Text(it, color = Warn, style = MaterialTheme.typography.labelMedium) }
             when {
                 state.loading && state.markdown.isBlank() -> ShimmerReport()
                 state.error != null && state.markdown.isBlank() -> ErrorBlock(state.error, onRetry)
@@ -529,7 +517,7 @@ private fun ReportCard(
             if (state.error != null && state.markdown.isNotBlank()) Text(state.error, color = Bad)
             state.lockedMessage?.let { LockedBanner(it, onUpgrade) }
             if (state.markdown.isNotBlank() && !state.loading) {
-                state.selectedProject?.let { DataScopeNote(it, state.reportFrames, onOpenRecordings, onEditProject) }
+                state.selectedProject?.let { DataScopeNote(it, state.reportRecordings, onOpenRecordings, onEditProject) }
             }
     }
 }
@@ -539,21 +527,21 @@ private fun ReportCard(
  * report, and send the user to the recordings in Clarity so they can watch the sessions behind each finding.
  */
 @Composable
-private fun DataScopeNote(project: ProjectDto, frames: Int, onOpenRecordings: (String) -> Unit, onEditProject: (ProjectDto) -> Unit) {
+private fun DataScopeNote(project: ProjectDto, recordings: Int, onOpenRecordings: (String) -> Unit, onEditProject: (ProjectDto) -> Unit) {
     Column(
         Modifier.fillMaxWidth().glassControl().padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Outlined.Info, null, tint = Accent, modifier = Modifier.size(18.dp))
-            Text(if (frames > 0) "Metrics + $frames recording frames" else "Based on aggregated metrics",
+            Text(if (recordings > 0) "Metrics + $recordings real sessions" else "Based on aggregated metrics",
                 Modifier.padding(start = 8.dp), fontWeight = FontWeight.SemiBold, color = Ink)
         }
         Text(
-            if (frames > 0) "This report combines Clarity's aggregated metrics with $frames frames from the sessions you attached. " +
-                "Heatmaps aren't available through Clarity's API."
-            else "Clarity's Data Export API shares counts, not session recordings or heatmaps, so this report hasn't seen " +
-                "any sessions. Attach a recording or screenshots above to include what users actually did.",
+            if (recordings > 0) "ClarifiAI pulled $recordings session recordings from Clarity (including sessions with rage and " +
+                "dead taps) and read what each user saw and tapped. Session links in the report open the replay."
+            else "Clarity didn't return session recordings for this period, so this report is based on aggregated metrics. " +
+                "Heatmaps aren't available through Clarity's API.",
             color = InkMuted, style = MaterialTheme.typography.bodyMedium,
         )
         val url = project.recordingsUrl

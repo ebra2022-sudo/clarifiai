@@ -54,8 +54,9 @@ class PdfExportTest {
     fun rendersTypicalReport() {
         val r = render("typical", markdown, PdfExportUtility.ReportMeta(
             projectName = "Northwind Storefront", timeframeLabel = "Last 7 days", kpis = kpis,
-            notes = listOf("Covers 5 of 7 requested days. Clarity only exposes the last 3 days."), whiteLabel = false,
-            recordingFrames = 6,
+            notes = listOf("Covers 5 of 7 requested days. Clarity only exposes the last 3 days.",
+                "Reviewed 8 real session recordings from Clarity (1 with rage taps, 4 with dead taps, 3 most active)."),
+            whiteLabel = false,
         ))
         assertTrue(r.file.length() > 1_000)
         assertTrue(r.pages in 1..3)

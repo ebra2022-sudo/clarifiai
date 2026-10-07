@@ -14,8 +14,7 @@ import com.clarifiai.app.data.AuditEvent
 import com.clarifiai.app.data.AuditRequestDto
 import com.clarifiai.app.data.Entitlements
 import com.clarifiai.app.data.Kpis
-import com.clarifiai.app.data.RecordingAttachment
-import com.clarifiai.app.data.RecordingFrames
+import com.clarifiai.app.data.reviewedRecordings
 import com.clarifiai.app.data.ProjectDto
 import com.clarifiai.app.data.Tier
 import com.clarifiai.app.data.Timeframe
@@ -72,12 +71,7 @@ data class DashboardUiState(
     val paywall: PaywallState? = null,
     val offers: List<PlanOffer> = emptyList(),
     val reportTimeframeLabel: String = "",
-    /** Session recordings / screenshots attached for the next audit. */
-    val recordings: List<RecordingAttachment> = emptyList(),
-    val attachingRecordings: Boolean = false,
-    val recordingNote: String = "",
     /** What the current report was built from (shown with the report and in the PDF). */
-    val reportFrames: Int = 0,
     val reportDaysCovered: Int = 0,
     val reportRequestedDays: Int = 0,
     /** PDFs exported earlier, newest first. */
@@ -85,7 +79,8 @@ data class DashboardUiState(
     val showReports: Boolean = false,
 ) {
     val selectedProject: ProjectDto? get() = projects.firstOrNull { it.id == projectId }
-    val recordingFrameCount: Int get() = recordings.sumOf { it.frames.size }
+    /** Real Clarity session recordings the server reviewed for this report. */
+    val reportRecordings: Int get() = reviewedRecordings(notes)
 }
 
 sealed interface UiEvent {
@@ -247,33 +242,6 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    // ------------------------------------------------------------ session recordings
-
-    /** Adds picked videos/screenshots, sharing the frame budget across them. */
-    fun addRecordings(uris: List<Uri>) {
-        if (uris.isEmpty() || _state.value.attachingRecordings) return
-        viewModelScope.launch {
-            _state.update { it.copy(attachingRecordings = true) }
-            var skipped = 0
-            for (uri in uris) {
-                val budget = RecordingFrames.MAX_FRAMES - _state.value.recordingFrameCount
-                if (budget <= 0) { skipped++; continue }
-                val att = runCatching { RecordingFrames.extract(getApplication(), uri, budget) }.getOrNull()
-                if (att == null) skipped++ else _state.update { it.copy(recordings = it.recordings + att) }
-            }
-            _state.update { it.copy(attachingRecordings = false) }
-            if (skipped > 0) {
-                _events.emit(UiEvent.Message(
-                    if (_state.value.recordingFrameCount >= RecordingFrames.MAX_FRAMES) "Frame limit reached (${RecordingFrames.MAX_FRAMES}); some items weren't added."
-                    else "Couldn't read $skipped of the selected items."
-                ))
-            }
-        }
-    }
-
-    fun removeRecording(id: Long) = _state.update { st -> st.copy(recordings = st.recordings.filterNot { it.id == id }) }
-    fun setRecordingNote(note: String) = _state.update { it.copy(recordingNote = note.take(500)) }
-
     // ------------------------------------------------------------ audit
 
     fun setTimeframe(tf: Timeframe) {
@@ -330,8 +298,6 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
             timeframe = s.timeframe.name,
             startDate = s.customStart?.takeIf { s.timeframe == Timeframe.CUSTOM }?.toString(),
             endDate = s.customEnd?.takeIf { s.timeframe == Timeframe.CUSTOM }?.toString(),
-            recordingFrames = s.recordings.flatMap { it.frames },
-            recordingNote = s.recordingNote.trim().takeIf { it.isNotEmpty() && s.recordings.isNotEmpty() },
         )
         val requestedDays = when (s.timeframe) {
             Timeframe.TODAY -> 1
@@ -345,7 +311,7 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
             _state.update {
                 it.copy(loading = true, markdown = "", kpis = null, error = null, lockedMessage = null,
                     notes = emptyList(), reportTimeframeLabel = s.timeframe.label,
-                    reportFrames = dto.recordingFrames.size, reportRequestedDays = requestedDays, reportDaysCovered = 0)
+                    reportRequestedDays = requestedDays, reportDaysCovered = 0)
             }
             val sb = StringBuilder()
             var lastPush = 0L
@@ -425,7 +391,6 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
                     PdfExportUtility.ReportMeta(
                         projectName = projectName, timeframeLabel = s.reportTimeframeLabel, kpis = s.kpis,
                         notes = s.notes, whiteLabel = s.entitlements.features.whiteLabelPdf, generatedAt = now,
-                        recordingFrames = s.reportFrames,
                     ),
                 )
                 val report = reports.save(

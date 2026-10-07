@@ -10,6 +10,7 @@ import android.graphics.pdf.PdfDocument
 import android.text.TextUtils
 import android.text.TextPaint
 import com.clarifiai.app.data.Kpis
+import com.clarifiai.app.data.reviewedRecordings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -28,8 +29,6 @@ object PdfExportUtility {
         val notes: List<String>,
         val whiteLabel: Boolean,
         val generatedAt: Date = Date(),
-        /** Frames from attached session recordings that the report was built with. */
-        val recordingFrames: Int = 0,
     )
 
     data class Rendered(val file: File, val pages: Int)
@@ -467,9 +466,10 @@ object PdfExportUtility {
         }
 
         private fun aboutThisData() {
-            val scope = if (meta.recordingFrames > 0) {
-                "Combines aggregated Microsoft Clarity metrics with ${meta.recordingFrames} frames from session recordings " +
-                    "attached for this report. Heatmaps are not available through Clarity's export API."
+            val recordings = reviewedRecordings(meta.notes)
+            val scope = if (recordings > 0) {
+                "Combines aggregated Microsoft Clarity metrics with the timelines of $recordings real session recordings " +
+                    "pulled from Clarity. Heatmaps are not available through Clarity's API."
             } else DATA_SCOPE_NOTE
             val notes = meta.notes + scope
             val size = 8.5f
