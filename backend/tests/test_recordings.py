@@ -127,3 +127,24 @@ async def test_long_range_requests_larger_samples(storage):
         end = datetime(2026, 10, 7, tzinfo=timezone.utc)
         await RecordingsClient(storage, http).sample(ClaritySource("c:l", "t"), end - timedelta(days=30), end)
     assert {b["count"] for b in mock.bodies} == {25}
+
+
+async def test_recordings_endpoint_returns_the_audit_sample_without_using_an_audit(client, settings, storage, claude):
+    from main import app
+    mock = RecordingsMock()
+    http = httpx.AsyncClient(transport=httpx.MockTransport(mock))
+    app.state.audit = AuditService(settings, storage, ClarityClient(settings, storage, http), claude,
+                                   TokenVault(settings.token_encryption_key), RecordingsClient(storage, http))
+    body = {"project_id": "demo", "timeframe": "TODAY"}
+    await client.post("/api/v1/analytics/audit", json=body, headers=headers())
+    calls = len(mock.bodies)
+    r = await client.post("/api/v1/analytics/recordings", json=body, headers=headers())
+    assert r.status_code == 200
+    data = r.json()
+    assert [s["replay"] for s in data["sessions"]] == ["rage-1", "dead-1", "shared"] and data["sampled_sessions"] == 3
+    assert len(mock.bodies) == calls  # served from the audit's cache
+    usage = (await client.get("/api/v1/account/entitlements", headers=headers())).json()["usage"]["used"]
+    assert usage == 1  # only the audit counted
+    r = await client.post("/api/v1/analytics/recordings", json={"project_id": "demo", "timeframe": "LAST_MONTH"}, headers=headers())
+    assert r.status_code == 403  # same tier rules as audits
+    await http.aclose()

@@ -646,6 +646,12 @@ class AuditService:
             log.warning("Clarity dashboard history unavailable for %s", source.key, exc_info=True)
             return None
 
+    async def recordings_for(self, req: AuditRequest, source: ClaritySource) -> dict[str, Any]:
+        """The recordings sample an audit for this range used (served from cache when the audit just ran)."""
+        start, end, _ = self.resolve_range(req)
+        sample = await self._sample_recordings(source, start, end) if self._recordings else None
+        return sample or {"sampled_sessions": 0, "patterns": None, "sessions": []}
+
     async def _sample_recordings(self, source: ClaritySource, start: date, end: date) -> dict[str, Any] | None:
         assert self._recordings is not None
         start_dt = datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc)

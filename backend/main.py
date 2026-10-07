@@ -286,6 +286,20 @@ def project_id_is_connection(project_id: str) -> bool:
     return project_id.startswith("cp_")
 
 
+@app.post("/api/v1/analytics/recordings")
+async def recordings(body: AuditRequest, request: Request, user: UserRecord = Depends(current_user)) -> dict:
+    """The real session recordings reviewed for a report: patterns plus the sessions read in full, with replay links.
+
+    Kept out of the audit stream so the NDJSON contract stays as it is; the app fetches this after an audit (it is
+    cached from the audit, so it's quick) to show the sessions and put them in the PDF. Doesn't use an audit.
+    """
+    svc: AuditService = request.app.state.audit
+    policy = POLICIES[user.tier]
+    svc.enforce_policy(body, policy)
+    source = await _resolve_source(request, user, body.project_id, policy.max_projects)
+    return await svc.recordings_for(body, source)
+
+
 @app.post("/api/v1/analytics/audit")
 async def audit(body: AuditRequest, request: Request, user: UserRecord = Depends(current_user)) -> StreamingResponse:
     storage: Storage = request.app.state.storage
