@@ -44,6 +44,7 @@ Format the output strictly in Markdown with these specific headers:
 - [Prioritized product bets for activation, engagement and retention, each tied to the evidence above and how to measure it]
 """
 
+MAX_REPORT_TOKENS = 12000
 SYSTEM_PROMPT = "Respond only with the requested Markdown report. No preamble, no closing remarks."
 ROADMAP_MARKER = "### 🚀"
 SNAPSHOT_GRACE_HOURS = 3
@@ -469,12 +470,17 @@ class ClaudeService:
         ]
         content.append({"type": "text", "text": prompt})
         try:
+            # Long ranges with recording evidence produce longer reports; 4096 tokens cut the roadmap off.
             async with self._client.messages.stream(
-                model=self._model, max_tokens=4096, system=SYSTEM_PROMPT,
+                model=self._model, max_tokens=MAX_REPORT_TOKENS, system=SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": content}],
             ) as stream:
                 async for text in stream.text_stream:
                     yield text
+                final = await stream.get_final_message()
+                if final.stop_reason == "max_tokens":
+                    log.warning("Report hit the %d-token limit", MAX_REPORT_TOKENS)
+                    yield "\n\n*This report reached its length limit and was cut short.*\n"
         except anthropic.RateLimitError as exc:
             raise AuditError(429, "AI_RATE_LIMIT", "The AI engine is busy. Please retry in a minute.") from exc
         except anthropic.AuthenticationError as exc:
