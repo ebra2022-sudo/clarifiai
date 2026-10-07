@@ -106,6 +106,17 @@ async def health() -> dict:
     return {"status": "ok"}
 
 
+@app.get("/api/v1/cron/snapshots")
+async def cron_snapshots(request: Request) -> dict:
+    """Wakes the server and saves tonight's snapshots (called by the GitHub Actions schedule).
+
+    Safe to leave public: outside the snapshot window it does nothing, and each project is snapshotted at most once a
+    day using the request Clarity reserves for it.
+    """
+    saved = await request.app.state.audit.run_daily_snapshots()
+    return {"saved": saved}
+
+
 @app.get("/api/v1/account/entitlements")
 async def entitlements(request: Request, user: UserRecord = Depends(current_user)) -> dict:
     return await _entitlements(request.app.state.storage, user)
@@ -125,12 +136,15 @@ async def verify_subscription(body: SubscriptionVerifyRequest, request: Request,
 # reused across app restarts. A connection whose token Clarity rejects is kept and flagged for reconnecting.
 async def _project_view(request: Request, conn: Connection) -> dict:
     clarity: ClarityClient = request.app.state.clarity
-    used = await request.app.state.storage.clarity_used(conn.source_key, utc_today())
+    storage: Storage = request.app.state.storage
+    used = await storage.clarity_used(conn.source_key, utc_today())
+    history_days, history_since = await storage.snapshot_history(conn.source_key)
     status = conn.status
     if status == "active" and conn.token_expires_at and conn.token_expires_at < datetime.now(timezone.utc).isoformat():
         status = "needs_reauth"
     return {"id": conn.id, "name": conn.name, "created_at": conn.created_at, "status": status,
             "clarity_project_id": conn.clarity_project_id, "token_expires_at": conn.token_expires_at,
+            "history_days": history_days, "history_since": history_since,
             "clarity_requests": {"used": used, "limit": clarity.requests_allowed()}}
 
 

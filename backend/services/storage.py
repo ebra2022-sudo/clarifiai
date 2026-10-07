@@ -296,6 +296,12 @@ class Storage:
         )
         return await cur.fetchone() is not None
 
+    async def snapshot_history(self, project_id: str) -> tuple[int, str | None]:
+        """How many daily snapshots exist for a project, and the earliest day."""
+        cur = await self.db.execute("SELECT COUNT(*) AS n, MIN(day) AS first FROM snapshots WHERE project_id=?", (project_id,))
+        row = await cur.fetchone()
+        return int(row["n"]), row["first"]
+
     async def get_snapshots(self, project_id: str, start: date, end: date) -> list[tuple[date, dict[str, Any]]]:
         cur = await self.db.execute(
             "SELECT day, payload FROM snapshots WHERE project_id=? AND day BETWEEN ? AND ? ORDER BY day",
