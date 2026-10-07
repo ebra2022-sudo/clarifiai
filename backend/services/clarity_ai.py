@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import re
@@ -15,31 +16,34 @@ import anthropic
 import httpx
 
 from config import Settings
-from models import AuditRequest, Timeframe
+from models import AuditRequest, Timeframe, image_media_type
 from services.projects import ClaritySource, TokenError, TokenVault
 from services.storage import Storage
 from services.tiers import TierPolicy, required_tier
 
 log = logging.getLogger("clarity_ai")
 
-PROMPT_TEMPLATE = """You are a Staff Product Manager and Lead UX Researcher. Analyze this sanitized Microsoft Clarity JSON telemetry payload and generate a strict, non-conversational engineering backlog:
+PROMPT_TEMPLATE = """You are a Principal Product Manager and UX Researcher. You are given sanitized Microsoft Clarity behaviour data for one product and, when attached, frames from real user session recordings. Write a concise, non-conversational report for a product manager.
+
+Focus on users, not code: what people were trying to do, where they hesitated, got stuck or gave up, and which journeys work. Treat rage/dead taps and errors as evidence of user frustration, not as engineering tasks; mention implementation detail only when it is the whole point. Ground every claim in the data or the recording frames, name the screen or page and the numbers, and say plainly when the data is too thin to conclude something.
 
 [INSERT SANITIZED CLARITY JSON HERE]
 
 Format the output strictly in Markdown with these specific headers:
 
 ### 🚨 Immediate Hotfixes (High Frustration)
-- [Bullet points containing: Specific element, inferred technical cause, concrete fix action]
+- [The few user-facing problems to fix first: where it happens, what the user experiences, the evidence, and the product fix]
 
 ### 📉 Friction Trends & User Drop-off
-- [Bullet points detailing behavioral friction patterns detected across screens]
+- [How users move through the product: engagement, depth, where journeys stall or users leave, which audiences struggle, and what the session recordings show]
 
 ### 🚀 Strategic Next-Sprint Product Roadmap
-- [Prioritized features derived directly from conversion drop-offs to improve retention]
+- [Prioritized product bets for activation, engagement and retention, each tied to the evidence above and how to measure it]
 """
 
 SYSTEM_PROMPT = "Respond only with the requested Markdown report. No preamble, no closing remarks."
 ROADMAP_MARKER = "### 🚀"
+SNAPSHOT_GRACE_HOURS = 3
 
 
 # Tells the model what it did NOT see, so it doesn't claim to have watched sessions. Clarity's export API returns
@@ -47,6 +51,11 @@ ROADMAP_MARKER = "### 🚀"
 DATA_SCOPE = ("Aggregated Microsoft Clarity Data Export metrics only. Session recordings, heatmaps and "
               "element-level click targets are not available to this analysis. Where a finding needs visual "
               "confirmation, name the page or screen whose recordings the team should review in Clarity.")
+DATA_SCOPE_WITH_RECORDINGS = (
+    "Aggregated Microsoft Clarity Data Export metrics, plus {n} frame(s) from real user session recordings or "
+    "screenshots, attached as images in playback order. The frames show what users actually saw and did; use them "
+    "to explain the metrics, and say which observations come from the frames. Heatmaps and element-level click "
+    "targets are not available.")
 
 
 class AuditError(Exception):
@@ -82,9 +91,18 @@ CONTEXT_BLOCKS = {
     "Device": "devices", "OS": "operating_systems", "Browser": "browsers",
     "Country": "countries", "CountryRegion": "countries", "Country/Region": "countries",
     "PopularScreens": "popular_screens",
+    "ReferrerUrl": "referrers", "Referrer": "referrers", "PageTitle": "page_titles",
 }
 CTX = "ctx:"  # key prefix for context blocks inside a normalised payload
 MOBILE_MARKER = CTX + "Platform"
+
+
+def _float(v: Any) -> float:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return 0.0
+    return f if f == f and f not in (float("inf"), float("-inf")) else 0.0
 
 
 def _int(v: Any) -> int:
@@ -118,7 +136,7 @@ def normalize(raw: list[dict[str, Any]], dimension: str) -> dict[str, dict[str, 
         if name in MOBILE_METRICS:
             out.setdefault(MOBILE_MARKER, {"mobile_app": {"seen": 1}})
             name = MOBILE_METRICS[name]
-        if name in CONTEXT_BLOCKS or name == "EngagementTime":
+        if name in CONTEXT_BLOCKS or name in ("EngagementTime", "ScrollDepth"):
             _add_context(out, name, infos)
             continue
         if name not in TRACKED_METRICS:
@@ -129,9 +147,15 @@ def normalize(raw: list[dict[str, Any]], dimension: str) -> dict[str, dict[str, 
                 continue
             dim = _dim_value(info, dimension)
             if name == "Traffic":
+                sessions = _int(info.get("totalSessionCount"))
+                # Views per session arrives as an average ("pagesPerSessionPercentage" on the web,
+                # "screensPerSessionPercentage" in apps). Store it weighted by sessions so days and rows merge.
+                per_session = _float(info.get("pagesPerSessionPercentage") or info.get("screensPerSessionPercentage"))
                 _add(rows, dim, {
-                    "sessions": _int(info.get("totalSessionCount")),
+                    "sessions": sessions,
                     "users": _int(info.get("distinctUserCount") or info.get("distantUserCount")),
+                    "bot_sessions": _int(info.get("totalBotSessionCount")),
+                    "views_x100": round(per_session * sessions * 100),
                 })
             else:
                 _add(rows, dim, {
@@ -161,13 +185,23 @@ def _affected_sessions(info: dict[str, Any]) -> int:
 
 def _add_context(out: dict[str, Any], name: str, infos: list[dict[str, Any]]) -> None:
     if name == "EngagementTime":
+        # Per-session averages (seconds). "samples" counts the readings so merged days average, not add up.
         for info in infos:
             _add(out.setdefault(CTX + name, {}), "(all)",
-                 {"total_time": _int(info.get("totalTime")), "active_time": _int(info.get("activeTime"))})
+                 {"total_time": _int(info.get("totalTime")), "active_time": _int(info.get("activeTime")), "samples": 1})
+        return
+    if name == "ScrollDepth":
+        for info in infos:
+            depth = next((_float(v) for k, v in info.items() if "scroll" in k.lower()), 0.0)
+            if depth:
+                _add(out.setdefault(CTX + name, {}), "(all)", {"depth_x100": round(depth * 100), "samples": 1})
         return
     rows = out.setdefault(CTX + CONTEXT_BLOCKS[name], {})
     for info in infos:
-        label = str(info.get("name") or "").strip()[:60]
+        raw = str(info.get("name") or "").strip()
+        # Referrers: keep only the host, never paths or query strings.
+        label = (urlsplit(raw if "://" in raw else "//" + raw).hostname or "") if name in ("ReferrerUrl", "Referrer") else raw
+        label = label[:60]
         if label:
             _add(rows, label, {"sessions": _int(info.get("sessionsCount"))})
 
@@ -180,13 +214,10 @@ def audience(norm: dict[str, Any], limit: int = 8) -> dict[str, Any]:
     """Aggregate context (top screens, devices, OS, countries, engagement) with names scrubbed of PII."""
     out: dict[str, Any] = {}
     for key, rows in norm.items():
-        if not key.startswith(CTX) or key in (MOBILE_MARKER, CTX + "EngagementTime"):
+        if not key.startswith(CTX) or key in (MOBILE_MARKER, CTX + "EngagementTime", CTX + "ScrollDepth"):
             continue
         ranked = sorted(rows.items(), key=lambda kv: kv[1].get("sessions", 0), reverse=True)[:limit]
         out[key[len(CTX):]] = [{"name": scrub_text(n), "sessions": v.get("sessions", 0)} for n, v in ranked]
-    eng = norm.get(CTX + "EngagementTime", {}).get("(all)")
-    if eng:
-        out["engagement_time"] = eng
     return out
 
 
@@ -244,6 +275,10 @@ def compute_kpis(norm: dict[str, Any]) -> dict[str, Any]:
         return min(1.0, s(metric, "sessions") / sessions) if sessions else 0.0
 
     penalty = sum(w * min(1.0, rate(m) / 0.10) for m, w in HEALTH_WEIGHTS.items())
+    traffic_sessions = s("Traffic", "sessions")
+    eng = norm.get(CTX + "EngagementTime", {}).get("(all)", {})
+    eng_samples = max(1, eng.get("samples", 1))
+    scroll = norm.get(CTX + "ScrollDepth", {}).get("(all)", {})
     return {
         "health_score": max(0, min(100, round(100 - penalty))),
         "total_sessions": sessions,
@@ -255,6 +290,15 @@ def compute_kpis(norm: dict[str, Any]) -> dict[str, Any]:
         "rapid_scroll_session_pct": round(rate("ExcessiveScroll") * 100, 1),
         "script_error_session_pct": round(rate("ScriptErrorCount") * 100, 1),
         "error_click_count": s("ErrorClickCount", "total"),
+        # Product-level view of the same sessions.
+        "total_users": s("Traffic", "users"),
+        "bot_sessions": s("Traffic", "bot_sessions"),
+        "views_per_session": round(s("Traffic", "views_x100") / 100 / traffic_sessions, 1) if traffic_sessions else 0.0,
+        "engaged_seconds": round(eng.get("active_time", 0) / eng_samples) if eng else 0,
+        "session_seconds": round(eng.get("total_time", 0) / eng_samples) if eng else 0,
+        "scroll_depth_pct": round(scroll["depth_x100"] / 100 / max(1, scroll.get("samples", 1)), 1) if scroll else None,
+        # Share of sessions with visible frustration (rage or dead clicks/taps); a lower bound since they overlap.
+        "frustrated_session_pct": round(max(rate("RageClickCount"), rate("DeadClickCount")) * 100, 1),
     }
 
 
@@ -372,13 +416,18 @@ class ClaudeService:
         self._model = settings.claude_model
         self._client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key, max_retries=2, timeout=120.0)
 
-    async def stream_backlog(self, payload: dict[str, Any]) -> AsyncIterator[str]:
+    async def stream_backlog(self, payload: dict[str, Any], frames: list[str] | None = None) -> AsyncIterator[str]:
         body = scrub_text(json.dumps(payload, indent=2, ensure_ascii=False))
         prompt = PROMPT_TEMPLATE.replace("[INSERT SANITIZED CLARITY JSON HERE]", body)
+        content: list[dict[str, Any]] = [
+            {"type": "image", "source": {"type": "base64", "media_type": frame_media_type(f), "data": f}}
+            for f in frames or []
+        ]
+        content.append({"type": "text", "text": prompt})
         try:
             async with self._client.messages.stream(
                 model=self._model, max_tokens=4096, system=SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": prompt}],
+                messages=[{"role": "user", "content": content}],
             ) as stream:
                 async for text in stream.text_stream:
                     yield text
@@ -392,6 +441,10 @@ class ClaudeService:
         except anthropic.APIStatusError as exc:
             log.error("Anthropic API error %s", exc.status_code)
             raise AuditError(502, "AI_ERROR", f"AI engine error (HTTP {exc.status_code}).") from exc
+
+
+def frame_media_type(frame_b64: str) -> str:
+    return image_media_type(base64.b64decode(frame_b64[:24])) or "image/jpeg"
 
 
 class SectionGate:
@@ -432,6 +485,7 @@ class PreparedAudit:
     kpis: dict[str, Any]
     notes: list[str] = field(default_factory=list)
     days_covered: int = 0
+    frames: list[str] = field(default_factory=list)
 
 
 class AuditService:
@@ -486,17 +540,31 @@ class AuditService:
                 except AuditError as exc:
                     notes.append(f"Device breakdown unavailable: {exc.message}")
         else:
-            snaps = await self._storage.get_snapshots(source.key, start, end)
-            if not snaps:
-                norm1 = await self._live_url(source, 1, notes)
-                await self._storage.save_snapshot(source.key, today, norm1)
-                snaps = [(today, norm1)]
-                notes.append("History tracking just started for this project; only the last 24h is available so far.")
-            norm = merge([n for _, n in snaps])
-            covered = len(snaps)
+            # Clarity only serves the last 3 days. For ranges ending today, take those 3 days live and the older days
+            # from the snapshots this server saves each night; past ranges come from snapshots alone.
+            parts: list[dict[str, Any]] = []
+            live_days = 0
+            if end == today:
+                try:
+                    parts.append(normalize(await self._clarity.fetch_live(source, 3, "URL"), "URL"))
+                    live_days = 3
+                except AuditError as exc:
+                    if exc.code not in ("CLARITY_DAILY_BUDGET", "CLARITY_RATE_LIMIT"):
+                        raise
+                    notes.append("Clarity's daily request limit is reached for this project, so this report uses "
+                                 "saved history only.")
+            older_end = today - timedelta(days=3) if live_days else end
+            snaps = await self._storage.get_snapshots(source.key, start, older_end) if older_end >= start else []
+            parts += [n for _, n in snaps]
+            if not parts:
+                raise AuditError(404, "NO_DATA", "There's no saved history for this period yet, and Clarity only "
+                                                 "shares the last 3 days.")
+            norm = merge(parts)
+            covered = min(span, live_days + len(snaps))
             if covered < span:
-                notes.append(f"Covers {covered} of {span} requested days. Clarity only exposes the last 3 days, "
-                             "so longer ranges are assembled from daily snapshots recorded by this server.")
+                notes.append(f"Covers {covered} of {span} days. Microsoft Clarity only shares the last 3 days, so "
+                             "longer ranges are built from history ClarifiAI saves for this project every night. "
+                             "Earlier days fill in automatically as history builds up.")
             if policy.device_breakdown and not is_mobile(norm):
                 notes.append("Device breakdown is only available for ranges of 3 days or less.")
 
@@ -504,6 +572,7 @@ class AuditService:
         if kpis["total_sessions"] == 0 and not any(norm.values()):
             raise AuditError(404, "NO_DATA", "Clarity returned no data for this project and period.")
 
+        frames = list(req.recording_frames)
         mobile = is_mobile(norm)
         if mobile:
             granularity = ("app-wide totals: Clarity's export API does not break mobile-app friction down by screen; "
@@ -515,12 +584,17 @@ class AuditService:
                 "platform": "mobile_app" if mobile else "website",
                 "timeframe": req.timeframe.value, "period_start": start.isoformat(), "period_end": end.isoformat(),
                 "days_covered": covered, "friction_target_granularity": granularity,
-                "data_scope": DATA_SCOPE,
+                "data_scope": DATA_SCOPE_WITH_RECORDINGS.format(n=len(frames)) if frames else DATA_SCOPE,
                 "data_notes": notes,
             },
             "totals": kpis,
             "top_friction_targets": top_targets(norm, policy.top_elements),
         }
+        if frames:
+            payload["session_recordings"] = {
+                "frames_attached": len(frames),
+                "user_note": scrub_text(req.recording_note.strip())[:500] if req.recording_note else None,
+            }
         context = audience(norm)
         devices = context.pop("devices", None)
         if context:
@@ -529,14 +603,14 @@ class AuditService:
             payload["device_breakdown"] = device_breakdown(device_norm)
         elif policy.device_breakdown and devices:
             payload["device_breakdown"] = [{"device": d["name"], "sessions": d["sessions"]} for d in devices]
-        return PreparedAudit(payload=payload, kpis=kpis, notes=notes, days_covered=covered)
+        return PreparedAudit(payload=payload, kpis=kpis, notes=notes, days_covered=covered, frames=frames)
 
     async def events(self, prepared: PreparedAudit, policy: TierPolicy, usage: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
         yield {"type": "meta", "tier": policy.tier.value, "kpis": prepared.kpis, "notes": prepared.notes,
                "days_covered": prepared.days_covered, "usage": usage}
         gate, emitted = SectionGate(enabled=not policy.full_roadmap), 0
         try:
-            async with aclosing(self._claude.stream_backlog(prepared.payload)) as gen:
+            async with aclosing(self._claude.stream_backlog(prepared.payload, prepared.frames)) as gen:
                 async for chunk in gen:
                     out = gate.feed(chunk)
                     if out:
@@ -560,21 +634,37 @@ class AuditService:
             log.exception("Unexpected error while streaming audit")
             yield {"type": "error", "code": "INTERNAL", "message": "Unexpected server error."}
 
-    async def run_daily_snapshots(self) -> None:
-        now = datetime.now(timezone.utc)
-        if now.hour < self._s.snapshot_hour_utc:
-            return
+    def snapshot_day(self, now: datetime) -> date | None:
+        """The day a "last 24 hours" fetch made now should be filed under, or None outside the snapshot window.
+
+        From snapshot_hour_utc to midnight it is today. A late trigger (free hosts sleep; schedulers drift) still
+        files the previous day during the first hours after midnight, instead of losing it.
+        """
+        if now.hour >= self._s.snapshot_hour_utc:
+            return now.date()
+        if now.hour < SNAPSHOT_GRACE_HOURS:
+            return now.date() - timedelta(days=1)
+        return None
+
+    async def run_daily_snapshots(self) -> int:
+        """Save one snapshot per tracked project for the current snapshot day. Returns how many were saved."""
+        day = self.snapshot_day(datetime.now(timezone.utc))
+        if day is None:
+            return 0
+        saved = 0
         for source in await self.snapshot_sources():
-            if await self._storage.has_snapshot(source.key, now.date()):
+            if await self._storage.has_snapshot(source.key, day):
                 continue
             try:
                 raw = await self._clarity.fetch_live(source, 1, "URL", for_snapshot=True)
-                await self._storage.save_snapshot(source.key, now.date(), normalize(raw, "URL"))
-                log.info("Saved daily snapshot for %s", source.key)
+                await self._storage.save_snapshot(source.key, day, normalize(raw, "URL"))
+                saved += 1
+                log.info("Saved daily snapshot for %s (%s)", source.key, day)
             except AuditError as exc:
                 log.warning("Snapshot failed for %s: %s", source.key, exc.message)
                 if exc.code == "CLARITY_AUTH":
                     await self._storage.mark_needs_reauth(source.key)
+        return saved
 
     async def snapshot_sources(self) -> list[ClaritySource]:
         sources: list[ClaritySource] = []
