@@ -6,6 +6,7 @@ import base64
 import json
 import logging
 import re
+from collections import Counter
 from contextlib import aclosing
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -18,6 +19,7 @@ import httpx
 from config import Settings
 from models import AuditRequest, Timeframe, image_media_type
 from services.projects import ClaritySource, TokenError, TokenVault
+from services.recordings import RecordingsClient
 from services.storage import Storage
 from services.tiers import TierPolicy, required_tier
 
@@ -44,6 +46,7 @@ Format the output strictly in Markdown with these specific headers:
 SYSTEM_PROMPT = "Respond only with the requested Markdown report. No preamble, no closing remarks."
 ROADMAP_MARKER = "### 🚀"
 SNAPSHOT_GRACE_HOURS = 3
+RECORDINGS_WAIT_SECONDS = 50
 
 
 # Tells the model what it did NOT see, so it doesn't claim to have watched sessions. Clarity's export API returns
@@ -51,11 +54,27 @@ SNAPSHOT_GRACE_HOURS = 3
 DATA_SCOPE = ("Aggregated Microsoft Clarity Data Export metrics only. Session recordings, heatmaps and "
               "element-level click targets are not available to this analysis. Where a finding needs visual "
               "confirmation, name the page or screen whose recordings the team should review in Clarity.")
+DATA_SCOPE_WITH_SESSIONS = (
+    "Aggregated Microsoft Clarity metrics plus timelines of {n} real session recordings pulled from Clarity "
+    "(session_recordings.sessions), chosen to include sessions with rage taps, dead taps and quick backs and the most "
+    "active sessions. Each timeline lists, in order, the screens a user saw and what they tapped; dead and rage taps "
+    "are marked. Use them to tell concrete user stories behind the metrics, and cite a session by linking its replay "
+    "URL as a Markdown link. Heatmaps are not available.")
 DATA_SCOPE_WITH_RECORDINGS = (
     "Aggregated Microsoft Clarity Data Export metrics, plus {n} frame(s) from real user session recordings or "
     "screenshots, attached as images in playback order. The frames show what users actually saw and did; use them "
     "to explain the metrics, and say which observations come from the frames. Heatmaps and element-level click "
     "targets are not available.")
+
+
+def data_scope(frames: int, sessions: int) -> str:
+    """What the model can and can't see, so it neither under-uses nor invents evidence."""
+    if sessions:
+        scope = DATA_SCOPE_WITH_SESSIONS.format(n=sessions)
+        if frames:
+            scope += f" {frames} frame(s) the user attached from recordings or screenshots are also included as images."
+        return scope
+    return DATA_SCOPE_WITH_RECORDINGS.format(n=frames) if frames else DATA_SCOPE
 
 
 class AuditError(Exception):
@@ -490,9 +509,10 @@ class PreparedAudit:
 
 class AuditService:
     def __init__(self, settings: Settings, storage: Storage, clarity: ClarityClient, claude: ClaudeService,
-                 vault: TokenVault) -> None:
+                 vault: TokenVault, recordings: RecordingsClient | None = None) -> None:
         self._s, self._storage, self._clarity, self._claude = settings, storage, clarity, claude
         self._vault = vault
+        self._recordings = recordings
 
     @staticmethod
     def resolve_range(req: AuditRequest) -> tuple[date, date, int]:
@@ -527,6 +547,40 @@ class AuditService:
         return norm
 
     async def prepare(self, req: AuditRequest, policy: TierPolicy, source: ClaritySource) -> PreparedAudit:
+        """Metrics and real session recordings for the period, fetched concurrently."""
+        start, end, _ = self.resolve_range(req)
+        rec_task = asyncio.create_task(self._sample_recordings(source, start, end)) if self._recordings else None
+        try:
+            prepared = await self._prepare_metrics(req, policy, source)
+        except BaseException:
+            if rec_task:
+                rec_task.cancel()
+            raise
+        sessions = await rec_task if rec_task else []
+        payload = prepared.payload
+        if sessions:
+            payload.setdefault("session_recordings", {})["sessions"] = sessions
+            why = Counter(s["selected_for"] for s in sessions)
+            prepared.notes.append(f"Reviewed {len(sessions)} real session recordings from Clarity ("
+                                  + ", ".join(f"{n} with {w}" if w != "most active" else f"{n} most active"
+                                              for w, n in why.items()) + ").")
+        elif self._recordings:
+            prepared.notes.append("Clarity didn't return session recordings for this period, so this report is "
+                                  "based on metrics only.")
+        payload["report_context"]["data_scope"] = data_scope(len(prepared.frames), len(sessions))
+        return prepared
+
+    async def _sample_recordings(self, source: ClaritySource, start: date, end: date) -> list[dict[str, Any]]:
+        assert self._recordings is not None
+        start_dt = datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc)
+        end_dt = datetime.now(timezone.utc) if end >= utc_today() else datetime.combine(end, datetime.max.time(), tzinfo=timezone.utc)
+        try:
+            return await asyncio.wait_for(self._recordings.sample(source, start_dt, end_dt), timeout=RECORDINGS_WAIT_SECONDS)
+        except Exception:  # noqa: BLE001 - recordings are a bonus; never fail the audit over them
+            log.warning("Session recordings unavailable for %s", source.key, exc_info=True)
+            return []
+
+    async def _prepare_metrics(self, req: AuditRequest, policy: TierPolicy, source: ClaritySource) -> PreparedAudit:
         start, end, span = self.resolve_range(req)
         today, notes = utc_today(), []
         device_norm = None
@@ -584,7 +638,7 @@ class AuditService:
                 "platform": "mobile_app" if mobile else "website",
                 "timeframe": req.timeframe.value, "period_start": start.isoformat(), "period_end": end.isoformat(),
                 "days_covered": covered, "friction_target_granularity": granularity,
-                "data_scope": DATA_SCOPE_WITH_RECORDINGS.format(n=len(frames)) if frames else DATA_SCOPE,
+                "data_scope": data_scope(len(frames), 0),
                 "data_notes": notes,
             },
             "totals": kpis,
