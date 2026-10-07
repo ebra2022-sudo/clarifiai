@@ -23,6 +23,7 @@ class PdfExportTest {
         healthScore = 64, totalSessions = 18_432, rageClickCount = 1_287, rageSessionPct = 4.2,
         deadClickCount = 3_904, deadClickSessionPct = 11.6, quickbackSessionPct = 6.1,
         rapidScrollSessionPct = 2.3, scriptErrorSessionPct = 0.8, errorClickCount = 212,
+        totalUsers = 12_904, viewsPerSession = 4.6, engagedSeconds = 138, sessionSeconds = 312, frustratedSessionPct = 11.6,
     )
 
     private val markdown = """
@@ -54,6 +55,7 @@ class PdfExportTest {
         val r = render("typical", markdown, PdfExportUtility.ReportMeta(
             projectName = "Northwind Storefront", timeframeLabel = "Last 7 days", kpis = kpis,
             notes = listOf("Covers 5 of 7 requested days. Clarity only exposes the last 3 days."), whiteLabel = false,
+            recordingFrames = 6,
         ))
         assertTrue(r.file.length() > 1_000)
         assertTrue(r.pages in 1..3)

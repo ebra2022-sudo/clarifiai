@@ -28,6 +28,8 @@ object PdfExportUtility {
         val notes: List<String>,
         val whiteLabel: Boolean,
         val generatedAt: Date = Date(),
+        /** Frames from attached session recordings that the report was built with. */
+        val recordingFrames: Int = 0,
     )
 
     data class Rendered(val file: File, val pages: Int)
@@ -338,13 +340,14 @@ object PdfExportUtility {
             val gx = M + ringW + 12f
             val tileW = (M + CONTENT_W - gx - 2 * gap) / 3
             val tileH = (h - gap) / 2
+            // Same product-first metrics as the app: reach, engagement, depth, then where users struggled.
             val tiles = listOf(
-                Tile("RAGE CLICKS", "%,d".format(k.rageClickCount), "${pct(k.rageSessionPct)} of sessions", sev(k.rageSessionPct, 2.0, 5.0)),
-                Tile("DEAD CLICKS", pct(k.deadClickSessionPct), "%,d clicks".format(k.deadClickCount), sev(k.deadClickSessionPct, 5.0, 10.0)),
+                Tile("SESSIONS", "%,d".format(k.totalSessions), "%,d users".format(k.totalUsers), null),
+                Tile("ENGAGED TIME", duration(k.engagedSeconds), "of ${duration(k.sessionSeconds)} / session", null),
+                Tile("VIEWS / SESSION", "%.1f".format(k.viewsPerSession), "screens or pages", null),
+                Tile("FRUSTRATED", pct(k.frustratedSessionPct), "rage or dead taps", sev(k.frustratedSessionPct, 3.0, 10.0)),
                 Tile("QUICK BACKS", pct(k.quickbackSessionPct), "of sessions", sev(k.quickbackSessionPct, 5.0, 10.0)),
-                Tile("RAPID SCROLLS", pct(k.rapidScrollSessionPct), "of sessions", sev(k.rapidScrollSessionPct, 5.0, 10.0)),
-                Tile("SCRIPT ERRORS", pct(k.scriptErrorSessionPct), "of sessions", sev(k.scriptErrorSessionPct, 2.0, 5.0)),
-                Tile("SESSIONS", "%,d".format(k.totalSessions), "analysed", null),
+                Tile("ERRORS", pct(k.scriptErrorSessionPct), "of sessions", sev(k.scriptErrorSessionPct, 2.0, 5.0)),
             )
             tiles.forEachIndexed { i, t ->
                 val x = gx + (i % 3) * (tileW + gap)
@@ -374,6 +377,8 @@ object PdfExportUtility {
         }
 
         private data class Tile(val label: String, val value: String, val sub: String, val severity: Int?)
+
+        private fun duration(seconds: Int) = if (seconds < 60) "${seconds}s" else "%d:%02d".format(seconds / 60, seconds % 60)
 
         private fun pct(v: Double) = if (v == Math.floor(v)) "${v.toInt()}%" else "%.1f%%".format(v)
         private fun sev(v: Double, warn: Double, bad: Double) = when {
@@ -462,7 +467,11 @@ object PdfExportUtility {
         }
 
         private fun aboutThisData() {
-            val notes = meta.notes + DATA_SCOPE_NOTE
+            val scope = if (meta.recordingFrames > 0) {
+                "Combines aggregated Microsoft Clarity metrics with ${meta.recordingFrames} frames from session recordings " +
+                    "attached for this report. Heatmaps are not available through Clarity's export API."
+            } else DATA_SCOPE_NOTE
+            val notes = meta.notes + scope
             val size = 8.5f
             val lineH = size * 1.5f
             val pad = 14f
