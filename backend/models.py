@@ -1,9 +1,19 @@
 from __future__ import annotations
 
+import base64
+import binascii
 from datetime import date, datetime, timezone
 from enum import Enum
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+def image_media_type(head: bytes) -> str | None:
+    if head.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if head.startswith(b"\x89PNG"):
+        return "image/png"
+    return None
 
 
 class Timeframe(str, Enum):
@@ -20,11 +30,33 @@ class Tier(str, Enum):
     MAX = "MAX"
 
 
+MAX_RECORDING_FRAMES = 12
+MAX_FRAME_BASE64_CHARS = 700_000  # ~500 KB JPEG; the app sends ~1024 px frames at ~100 KB
+
+
 class AuditRequest(BaseModel):
     project_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_\-]+$")
     timeframe: Timeframe
     start_date: date | None = None
     end_date: date | None = None
+    # Frames from session recordings (or screenshots) the user attached, base64 JPEG/PNG. Clarity has no recordings
+    # API, so this is how real sessions reach the analysis. Never stored.
+    recording_frames: list[str] = Field(default_factory=list, max_length=MAX_RECORDING_FRAMES)
+    recording_note: str | None = Field(default=None, max_length=500)
+
+    @field_validator("recording_frames")
+    @classmethod
+    def _validate_frames(cls, frames: list[str]) -> list[str]:
+        for f in frames:
+            if len(f) > MAX_FRAME_BASE64_CHARS:
+                raise ValueError("A recording frame is too large; send frames of about 1024 px.")
+            try:
+                head = base64.b64decode(f[:24], validate=True)
+            except (binascii.Error, ValueError) as exc:
+                raise ValueError("Recording frames must be base64-encoded images.") from exc
+            if image_media_type(head) is None:
+                raise ValueError("Recording frames must be JPEG or PNG images.")
+        return frames
 
     @model_validator(mode="after")
     def _validate_dates(self) -> "AuditRequest":
