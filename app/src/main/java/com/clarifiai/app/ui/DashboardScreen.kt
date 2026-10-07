@@ -92,6 +92,9 @@ import com.clarifiai.app.data.Timeframe
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.model.rememberMarkdownState
 import dev.chrisbanes.haze.rememberHazeState
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -112,6 +115,9 @@ fun DashboardScreen(vm: DashboardViewModel, activity: Activity) {
     val uriHandler = LocalUriHandler.current
     var showDatePicker by remember { mutableStateOf(false) }
     var projectToDelete by remember { mutableStateOf<ProjectDto?>(null) }
+    val pickRecordings = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(5)) { uris ->
+        vm.addRecordings(uris)
+    }
 
     LaunchedEffect(Unit) {
         vm.events.collect { ev ->
@@ -201,6 +207,15 @@ fun DashboardScreen(vm: DashboardViewModel, activity: Activity) {
                             else vm.setTimeframe(tf)
                         },
                         usageText = state.entitlements.usage.let { u -> u.limit?.let { "${u.used}/$it audits used this month" } },
+                        historyNote = historyNote(state.timeframe, state.selectedProject),
+                    )
+                }
+                item {
+                    RecordingsCard(
+                        recordings = state.recordings, attaching = state.attachingRecordings, note = state.recordingNote,
+                        onAdd = { pickRecordings.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) },
+                        onRemove = vm::removeRecording, onNoteChange = vm::setRecordingNote,
+                        modifier = Modifier.padding(horizontal = 16.dp),
                     )
                 }
                 item {
@@ -295,13 +310,16 @@ private fun KpiRow(kpis: Kpis?, loading: Boolean) {
         }
         return
     }
+    // Product view first: how many people came, how engaged they were, how deep they went, how many struggled.
     val healthColor = when { kpis.healthScore >= 80 -> Good; kpis.healthScore >= 60 -> Warn; else -> Bad }
+    val frustratedColor = when { kpis.frustratedSessionPct >= 10 -> Bad; kpis.frustratedSessionPct >= 3 -> Warn; else -> Good }
     val cards = listOf(
-        Triple("Rage Clicks", "%,d".format(kpis.rageClickCount), "${kpis.rageSessionPct}% of sessions") to Bad,
-        Triple("Dead-Click Drop-offs", "${kpis.deadClickSessionPct}%", "%,d dead clicks".format(kpis.deadClickCount)) to Warn,
-        Triple("Session Health", "${kpis.healthScore}", "out of 100") to healthColor,
-        Triple("Quick Backs", "${kpis.quickbackSessionPct}%", "of sessions") to Accent,
-        Triple("Rapid Scrolls", "${kpis.rapidScrollSessionPct}%", "of sessions") to Accent,
+        Triple("Sessions", "%,d".format(kpis.totalSessions), "%,d users".format(kpis.totalUsers)) to Ink,
+        Triple("Engaged time", duration(kpis.engagedSeconds), "of ${duration(kpis.sessionSeconds)} per session") to Accent,
+        Triple("Views per session", "%.1f".format(kpis.viewsPerSession), "screens or pages") to Accent,
+        Triple("Frustrated sessions", "${kpis.frustratedSessionPct}%", "hit rage or dead taps") to frustratedColor,
+        Triple("Session health", "${kpis.healthScore}", "out of 100") to healthColor,
+        Triple("Quick backs", "${kpis.quickbackSessionPct}%", "left a screen at once") to InkMuted,
     )
     LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(horizontal = 16.dp)) {
         items(cards) { (t, color) -> KpiCard(t.first, t.second, t.third, color) }
@@ -331,7 +349,7 @@ private fun ControlsCard(
     onSelect: (String) -> Unit, onConnect: () -> Unit, onDelete: (ProjectDto) -> Unit,
     onEdit: (ProjectDto) -> Unit, onReconnect: (ProjectDto) -> Unit,
     timeframe: Timeframe, allowed: List<String>, customLabel: String?,
-    onTimeframe: (Timeframe) -> Unit, usageText: String?,
+    onTimeframe: (Timeframe) -> Unit, usageText: String?, historyNote: String? = null,
 ) {
     var expanded by remember { mutableStateOf(false) }
     GlassCard(modifier, contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -361,6 +379,12 @@ private fun ControlsCard(
                             onClick = { expanded = false; onTimeframe(tf) },
                         )
                     }
+                }
+            }
+            historyNote?.let {
+                Row(Modifier.fillMaxWidth().clip(GlassShapes.Control).background(Accent.copy(alpha = 0.08f)).padding(12.dp)) {
+                    Icon(Icons.Outlined.Info, null, tint = Accent, modifier = Modifier.size(18.dp))
+                    Text(it, Modifier.padding(start = 8.dp), color = Ink, style = MaterialTheme.typography.labelMedium)
                 }
             }
             usageText?.let { Text(it, color = InkMuted, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(start = 4.dp)) }
@@ -439,6 +463,19 @@ private fun ReconnectBanner(project: ProjectDto, onReconnect: (ProjectDto) -> Un
     }
 }
 
+/** Explains, before running, how much of a long range Clarity's 3-day limit and the saved history can cover. */
+private fun historyNote(tf: Timeframe, project: ProjectDto?): String? {
+    if (project == null || tf == Timeframe.TODAY || tf == Timeframe.LAST_3_DAYS) return null
+    val saved = when (project.historyDays) {
+        0 -> "No nightly history saved yet"
+        1 -> "1 day of history saved"
+        else -> "${project.historyDays} days of history saved" + (project.historySince?.let { " since $it" } ?: "")
+    }
+    return "Clarity only shares the last 3 days. Longer reports add the history ClarifiAI saves every night: $saved."
+}
+
+private fun duration(seconds: Int): String = if (seconds < 60) "${seconds}s" else "%d:%02d".format(seconds / 60, seconds % 60)
+
 private fun clarityRequestsLabel(p: ProjectDto): String {
     val left = (p.clarityRequests.limit - p.clarityRequests.used).coerceAtLeast(0)
     return "$left of ${p.clarityRequests.limit} Clarity data refreshes left today"
@@ -460,6 +497,16 @@ private fun ReportCard(
                 Text("Executive Backlog", Modifier.padding(start = 12.dp), style = MaterialTheme.typography.titleLarge, color = Ink)
             }
             if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth().clip(GlassShapes.Pill), color = Accent, trackColor = Hairline)
+            if (state.reportDaysCovered > 0 || state.reportFrames > 0) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (state.reportDaysCovered > 0) {
+                        val full = state.reportDaysCovered >= state.reportRequestedDays
+                        Chip("Covers ${state.reportDaysCovered} of ${state.reportRequestedDays} day${if (state.reportRequestedDays == 1) "" else "s"}",
+                            if (full) Good else Warn)
+                    }
+                    if (state.reportFrames > 0) Chip("${state.reportFrames} recording frames", Accent)
+                }
+            }
             state.notes.forEach { Text(it, color = Warn, style = MaterialTheme.typography.labelMedium) }
             when {
                 state.loading && state.markdown.isBlank() -> ShimmerReport()
@@ -482,7 +529,7 @@ private fun ReportCard(
             if (state.error != null && state.markdown.isNotBlank()) Text(state.error, color = Bad)
             state.lockedMessage?.let { LockedBanner(it, onUpgrade) }
             if (state.markdown.isNotBlank() && !state.loading) {
-                state.selectedProject?.let { DataScopeNote(it, onOpenRecordings, onEditProject) }
+                state.selectedProject?.let { DataScopeNote(it, state.reportFrames, onOpenRecordings, onEditProject) }
             }
     }
 }
@@ -492,18 +539,21 @@ private fun ReportCard(
  * report, and send the user to the recordings in Clarity so they can watch the sessions behind each finding.
  */
 @Composable
-private fun DataScopeNote(project: ProjectDto, onOpenRecordings: (String) -> Unit, onEditProject: (ProjectDto) -> Unit) {
+private fun DataScopeNote(project: ProjectDto, frames: Int, onOpenRecordings: (String) -> Unit, onEditProject: (ProjectDto) -> Unit) {
     Column(
         Modifier.fillMaxWidth().glassControl().padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Outlined.Info, null, tint = Accent, modifier = Modifier.size(18.dp))
-            Text("Based on aggregated metrics", Modifier.padding(start = 8.dp), fontWeight = FontWeight.SemiBold)
+            Text(if (frames > 0) "Metrics + $frames recording frames" else "Based on aggregated metrics",
+                Modifier.padding(start = 8.dp), fontWeight = FontWeight.SemiBold, color = Ink)
         }
         Text(
-            "Clarity's Data Export API shares counts like rage and dead clicks, not session recordings or heatmaps, " +
-                "so this report hasn't watched any sessions. Check the pages it flags in Clarity's recordings before you fix them.",
+            if (frames > 0) "This report combines Clarity's aggregated metrics with $frames frames from the sessions you attached. " +
+                "Heatmaps aren't available through Clarity's API."
+            else "Clarity's Data Export API shares counts, not session recordings or heatmaps, so this report hasn't seen " +
+                "any sessions. Attach a recording or screenshots above to include what users actually did.",
             color = InkMuted, style = MaterialTheme.typography.bodyMedium,
         )
         val url = project.recordingsUrl
@@ -518,6 +568,14 @@ private fun DataScopeNote(project: ProjectDto, onOpenRecordings: (String) -> Uni
             }
         }
     }
+}
+
+@Composable
+private fun Chip(text: String, color: Color) {
+    Text(
+        text, color = color, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold,
+        modifier = Modifier.clip(GlassShapes.Pill).background(color.copy(alpha = 0.12f)).padding(horizontal = 10.dp, vertical = 4.dp),
+    )
 }
 
 @Composable
