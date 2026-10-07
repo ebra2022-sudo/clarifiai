@@ -2,7 +2,12 @@ package com.clarifiai.app.pdf
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.clarifiai.app.data.ElementCount
+import com.clarifiai.app.data.JourneyStep
 import com.clarifiai.app.data.Kpis
+import com.clarifiai.app.data.RecordingPatterns
+import com.clarifiai.app.data.RecordingSample
+import com.clarifiai.app.data.SessionJourney
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -46,7 +51,24 @@ class PdfExportTest {
         4. **Error monitoring** on the account area with alerting on new script errors.
     """.trimIndent()
 
-    private fun render(name: String, md: String, meta: PdfExportUtility.ReportMeta): PdfExportUtility.Rendered = runBlocking {
+    private val sampleSessions = RecordingSample(
+        sampledSessions = 64,
+        patterns = RecordingPatterns(
+            mostDeadTapped = listOf(ElementCount("Approve with biometrics", 9), ElementCount("Guardian", 8), ElementCount("Granted by guardian", 5)),
+            mostRageTapped = listOf(ElementCount("Block", 2)),
+            mostTapped = listOf(ElementCount("Guardian", 38), ElementCount("Block", 32), ElementCount("Home", 31), ElementCount("Reports", 30)),
+        ),
+        sessions = listOf(
+            SessionJourney("rage taps", "2026-09-13 10:02:28", "04 minutes and 18 seconds", 1, 41,
+                "https://clarity.microsoft.com/player/yfmtbrodjt/1iuvkcw/2b82hs",
+                listOf(JourneyStep("Reports", "00:00", listOf("tap 'Reports'", "dead tap 'YouTube' ×6", "rage taps '[unlabelled]'", "dead tap 'Granted by guardian'")))),
+            SessionJourney("left within a minute", "2026-10-02 08:41:10", "00 minutes and 47 seconds", 1, 3,
+                "https://clarity.microsoft.com/player/yfmtbrodjt/1jk2abc/9xy1zz",
+                listOf(JourneyStep("Onboarding", "00:00", listOf("tap 'Get started'", "tap 'Continue'", "tap 'Back'")))),
+        ),
+    )
+
+        private fun render(name: String, md: String, meta: PdfExportUtility.ReportMeta): PdfExportUtility.Rendered = runBlocking {
         PdfExportUtility.generate(context, md, meta).also { it.file.copyTo(File(out, "$name.pdf"), overwrite = true) }
     }
 
@@ -56,7 +78,7 @@ class PdfExportTest {
             projectName = "Northwind Storefront", timeframeLabel = "Last 7 days", kpis = kpis,
             notes = listOf("Covers 5 of 7 requested days. Clarity only exposes the last 3 days.",
                 "Reviewed 8 real session recordings from Clarity (1 with rage taps, 4 with dead taps, 3 most active)."),
-            whiteLabel = false,
+            whiteLabel = false, sessions = sampleSessions,
         ))
         assertTrue(r.file.length() > 1_000)
         assertTrue(r.pages in 1..3)

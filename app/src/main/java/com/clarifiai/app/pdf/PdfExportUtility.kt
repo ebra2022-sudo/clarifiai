@@ -10,6 +10,8 @@ import android.graphics.pdf.PdfDocument
 import android.text.TextUtils
 import android.text.TextPaint
 import com.clarifiai.app.data.Kpis
+import com.clarifiai.app.data.RecordingSample
+import com.clarifiai.app.data.SessionJourney
 import com.clarifiai.app.data.reviewedRecordings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -29,6 +31,8 @@ object PdfExportUtility {
         val notes: List<String>,
         val whiteLabel: Boolean,
         val generatedAt: Date = Date(),
+        /** Real Clarity session recordings behind the report, printed as a "Session evidence" section. */
+        val sessions: RecordingSample? = null,
     )
 
     data class Rendered(val file: File, val pages: Int)
@@ -227,6 +231,7 @@ object PdfExportUtility {
                     Block.Rule -> { ensure(16f); canvas?.drawRect(M, y + 7f, M + CONTENT_W, y + 7.6f, fill(RULE)); y += 16f }
                 }
             }
+            meta.sessions?.takeIf { it.sessions.isNotEmpty() }?.let { sessionEvidence(it) }
             aboutThisData()
             finishPage()
             return pageNo
@@ -464,6 +469,85 @@ object PdfExportUtility {
                 else -> 7f
             }
         }
+
+        // ------------------------------------------------------------ session evidence
+
+        private fun sessionEvidence(sample: RecordingSample) {
+            sectionHeading("Session evidence")
+            section = Section.OTHER
+            paragraph("${sample.sampledSessions} real sessions sampled from Microsoft Clarity across the period " +
+                "(rage and dead taps, quick backs, early exits and the most active users); ${sample.sessions.size} read in full below.",
+                M, CONTENT_W, 9.5f, MUTED)
+            space(8f)
+            sample.patterns?.let { p ->
+                patternTiles(listOf(
+                    Triple("MOST DEAD-TAPPED", AMBER, p.mostDeadTapped.take(4).map { "${it.element}  ·  ${it.sessions}" }),
+                    Triple("MOST RAGE-TAPPED", RED, p.mostRageTapped.take(4).map { "${it.element}  ·  ${it.sessions}" }),
+                    Triple("MOST USED", GREEN, p.mostTapped.take(4).map { "${it.element}  ·  ${it.sessions}" }),
+                ))
+                text("Counts are sessions, so one user tapping repeatedly counts once.", M, y + 7f, Style(7f, FAINT, REGULAR))
+                y += 18f
+            }
+            sample.sessions.forEach { sessionCard(it) }
+        }
+
+        private fun patternTiles(cols: List<Triple<String, Int, List<String>>>) {
+            val gap = 8f
+            val w = (CONTENT_W - gap * (cols.size - 1)) / cols.size
+            val lineH = 12f
+            val h = 30f + lineH * maxOf(1, cols.maxOf { it.third.size })
+            ensure(h + 6f)
+            atPageTop = false
+            cols.forEachIndexed { i, (label, color, rows) ->
+                val x = M + i * (w + gap)
+                canvas?.drawRoundRect(RectF(x, y, x + w, y + h), 8f, 8f, fill(PANEL))
+                canvas?.drawCircle(x + 13f, y + 14f, 3f, fill(color))
+                text(label, x + 21f, y + 17f, Style(6.5f, MUTED, MEDIUM, 0.16f))
+                val st = Style(8.5f, INK, REGULAR)
+                (rows.ifEmpty { listOf("None") }).forEachIndexed { r, row ->
+                    text(ellipsize(row, st, w - 24f), x + 12f, y + 34f + r * lineH, if (rows.isEmpty()) Style(8.5f, FAINT, REGULAR) else st)
+                }
+            }
+            y += h + 6f
+        }
+
+        private fun sessionCard(s: SessionJourney) {
+            val pad = 12f
+            val size = 9f
+            val lineH = size * 1.45f
+            val moments = s.keyMoments(4).map { wrap(tokens(it, false), CONTENT_W - 2 * pad - 12f, size) }
+            val link = s.replay?.let { ellipsize(it, Style(7.5f, BLUE, REGULAR), CONTENT_W - 2 * pad) }
+            val h = pad + 16f + 6f + moments.sumOf { it.size } * lineH + (if (link != null) 14f else 0f) + pad - 4f
+            if (h < bottom - CONT_TOP) ensure(h + 8f)
+            atPageTop = false
+            val top = y
+            canvas?.drawRoundRect(RectF(M, top, M + CONTENT_W, top + h), 8f, 8f, fill(PANEL))
+            canvas?.drawRoundRect(RectF(M, top, M + CONTENT_W, top + h), 8f, 8f, stroke(RULE, 0.6f))
+            // "Why picked" pill, then when / how long / how many taps.
+            val why = s.selectedFor.ifBlank { "session" }
+            val whyColor = when {
+                "rage" in why -> RED
+                "dead" in why || "quick" in why -> AMBER
+                "minute" in why -> BLUE
+                else -> GREEN
+            }
+            val pill = Style(7f, whyColor, MEDIUM, 0.06f)
+            val pw = paint(pill).measureText(why.uppercase()) + 12f
+            canvas?.drawRoundRect(RectF(M + pad, top + pad, M + pad + pw, top + pad + 14f), 7f, 7f, fill(tint(whyColor)))
+            text(why.uppercase(), M + pad + 6f, top + pad + 10f, pill)
+            val facts = listOfNotNull(s.started?.take(16), s.shortActiveTime?.let { "$it active" }, s.taps?.takeIf { it > 0 }?.let { "$it taps" })
+                .joinToString("  ·  ")
+            text(facts, M + pad + pw + 8f, top + pad + 10f, Style(8f, MUTED, REGULAR))
+            y = top + pad + 16f + 6f
+            moments.forEach { lines ->
+                canvas?.drawCircle(M + pad + 3f, y + size * 0.6f, 1.8f, fill(whyColor))
+                lines.forEach { line -> drawLine(line, M + pad + 12f, y + size, size, BODY); y += lineH }
+            }
+            link?.let { text(it, M + pad, y + 10f, Style(7.5f, BLUE, REGULAR)); y += 14f }
+            y = top + h + 8f
+        }
+
+        private fun tint(c: Int) = Color.argb(28, Color.red(c), Color.green(c), Color.blue(c))
 
         private fun aboutThisData() {
             val recordings = reviewedRecordings(meta.notes)
