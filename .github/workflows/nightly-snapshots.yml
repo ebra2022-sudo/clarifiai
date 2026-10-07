@@ -1,0 +1,27 @@
+# Saves each connected project's daily Clarity snapshot. Clarity only shares the last 3 days, so 7- and 30-day reports
+# are built from these. Render's free instance sleeps when idle and its in-process scheduler stops with it, so this
+# wakes it from outside. The endpoint does nothing outside 23:00–03:00 UTC and saves at most one snapshot per project
+# per day, so the retries below are harmless.
+name: Nightly Clarity snapshots
+
+on:
+  schedule:
+    - cron: "20 23 * * *"
+    - cron: "50 23 * * *"
+    - cron: "40 0 * * *"
+  workflow_dispatch:
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Wake the API and save snapshots
+        env:
+          API: ${{ vars.CLARIFIAI_API_URL || 'https://clarifiai-api.onrender.com' }}
+        run: |
+          for attempt in 1 2 3 4; do
+            if curl -fsS --max-time 120 "$API/api/v1/cron/snapshots"; then echo; exit 0; fi
+            echo "Attempt $attempt failed (cold start?); retrying in 30s"; sleep 30
+          done
+          exit 1
