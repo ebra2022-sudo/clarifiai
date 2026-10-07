@@ -64,10 +64,15 @@ async def test_sample_dedupes_caches_and_queries_trouble_first(storage):
         src = ClaritySource("c:test", "tok")
         end = datetime(2026, 10, 7, tzinfo=timezone.utc)
         out = await rec.sample(src, end - timedelta(days=3), end)
-        assert [s["replay"] for s in out] == ["rage-1", "shared", "dead-1"]
-        assert [s["selected_for"] for s in out] == ["rage taps", "rage taps", "dead taps"]
-        assert all(b["filters"]["date"]["start"].endswith("Z") for b in mock.bodies) and len(mock.bodies) == 4
-        assert await rec.sample(src, end - timedelta(days=3), end) == out and len(mock.bodies) == 4  # cached
+        # Round-robin across categories, most trouble first: rage-1, then dead-1, then the shared session.
+        assert [s["replay"] for s in out["sessions"]] == ["rage-1", "dead-1", "shared"]
+        assert [s["selected_for"] for s in out["sessions"]] == ["rage taps", "dead taps", "rage taps"]
+        assert out["sampled_sessions"] == 3
+        assert out["patterns"]["most_rage_tapped"] == [{"element": "Block", "sessions": 1}]
+        assert out["patterns"]["most_dead_tapped"] == [{"element": "Pay", "sessions": 1}]
+        assert all(b["filters"]["date"]["start"].endswith("Z") for b in mock.bodies) and len(mock.bodies) == 5
+        assert all(b["count"] == 8 for b in mock.bodies)  # short range: small samples
+        assert await rec.sample(src, end - timedelta(days=3), end) == out and len(mock.bodies) == 5  # cached
 
 
 async def test_sample_failure_is_soft(storage):
@@ -75,7 +80,7 @@ async def test_sample_failure_is_soft(storage):
     mock.status = 403
     async with httpx.AsyncClient(transport=httpx.MockTransport(mock)) as http:
         out = await RecordingsClient(storage, http).sample(ClaritySource("c:x", "t"), datetime.now(timezone.utc) - timedelta(days=1), datetime.now(timezone.utc))
-    assert out == []
+    assert out is None
 
 
 async def test_audit_includes_recordings_and_says_so(client, settings, storage, claude):
@@ -88,8 +93,8 @@ async def test_audit_includes_recordings_and_says_so(client, settings, storage, 
     events = ndjson(await client.post("/api/v1/analytics/audit", json={"project_id": "demo", "timeframe": "TODAY"}, headers=headers()))
     assert events[-1] == {"type": "done"}
     payload = claude.calls[0]
-    assert [s["replay"] for s in payload["session_recordings"]["sessions"]] == ["rage-1", "shared", "dead-1"]
-    assert "3 real session recordings" in payload["report_context"]["data_scope"]
+    assert [s["replay"] for s in payload["session_recordings"]["sessions"]] == ["rage-1", "dead-1", "shared"]
+    assert "3 real session recordings sampled" in payload["report_context"]["data_scope"]
     assert any(n.startswith("Reviewed 3 real session recordings") for n in events[0]["notes"])
 
     mock.status = 500
@@ -99,3 +104,26 @@ async def test_audit_includes_recordings_and_says_so(client, settings, storage, 
     assert events[-1] == {"type": "done"} and "session_recordings" not in claude.calls[1]
     assert any("metrics only" in n for n in events[0]["notes"])
     await http.aclose()
+
+
+def test_large_ranges_sample_more_but_send_a_bounded_set():
+    from services.recordings import MAX_DETAILED, patterns, select
+    sessions = [session(f"s{i}", [("Dead click", "Pay")] * (i % 4) + [("Click", "Home")]) for i in range(120)]
+    for i, s in enumerate(sessions):
+        s["timestamp"] = f"2026-09-{1 + i % 30:02d} 10:00:00"
+        s["activeDuration"] = f"0{i % 9} minutes and 10 seconds"
+    tagged = [("dead taps" if i % 2 else "most active", s) for i, s in enumerate(sessions)]
+    picked = select(tagged)
+    assert len(picked) == MAX_DETAILED
+    assert len({s["timestamp"][:10] for _, s in picked}) == MAX_DETAILED  # spread over different days
+    p = patterns(sessions)
+    assert p["most_dead_tapped"][0] == {"element": "Pay", "sessions": 90}
+    assert p["days_spanned"]["distinct_days"] == 30 and p["median_active_seconds"] is not None
+
+
+async def test_long_range_requests_larger_samples(storage):
+    mock = RecordingsMock()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(mock)) as http:
+        end = datetime(2026, 10, 7, tzinfo=timezone.utc)
+        await RecordingsClient(storage, http).sample(ClaritySource("c:l", "t"), end - timedelta(days=30), end)
+    assert {b["count"] for b in mock.bodies} == {25}
