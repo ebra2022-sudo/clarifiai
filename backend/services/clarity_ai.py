@@ -19,6 +19,7 @@ import httpx
 from config import Settings
 from models import AuditRequest, Timeframe, image_media_type
 from services.projects import ClaritySource, TokenError, TokenVault
+from services.dashboard import DashboardClient, history_kpis
 from services.recordings import RecordingsClient
 from services.storage import Storage
 from services.tiers import TierPolicy, required_tier
@@ -47,6 +48,7 @@ SYSTEM_PROMPT = "Respond only with the requested Markdown report. No preamble, n
 ROADMAP_MARKER = "### 🚀"
 SNAPSHOT_GRACE_HOURS = 3
 RECORDINGS_WAIT_SECONDS = 50
+DASHBOARD_WAIT_SECONDS = 75
 
 
 # Tells the model what it did NOT see, so it doesn't claim to have watched sessions. Clarity's export API returns
@@ -54,12 +56,18 @@ RECORDINGS_WAIT_SECONDS = 50
 DATA_SCOPE = ("Aggregated Microsoft Clarity Data Export metrics only. Session recordings, heatmaps and "
               "element-level click targets are not available to this analysis. Where a finding needs visual "
               "confirmation, name the page or screen whose recordings the team should review in Clarity.")
+PERIOD_HISTORY_SCOPE = (
+    "period_history holds Clarity dashboard answers covering the whole requested period (totals, daily trend, new vs "
+    "returning users, devices, countries, top pages); each has the question as Clarity interpreted it. Prefer these for "
+    "period-wide statements and trends; totals and top_friction_targets may cover fewer days (see data_notes).")
 DATA_SCOPE_WITH_SESSIONS = (
-    "Aggregated Microsoft Clarity metrics plus timelines of {n} real session recordings pulled from Clarity "
-    "(session_recordings.sessions), chosen to include sessions with rage taps, dead taps and quick backs and the most "
-    "active sessions. Each timeline lists, in order, the screens a user saw and what they tapped; dead and rage taps "
-    "are marked. Use them to tell concrete user stories behind the metrics, and cite a session by linking its replay "
-    "URL as a Markdown link. Heatmaps are not available.")
+    "Aggregated Microsoft Clarity metrics plus {n} real session recordings sampled across the period from Clarity "
+    "(sessions with rage taps, dead taps, quick backs, early exits, and the most active users). "
+    "session_recordings.patterns summarises all {n}: the elements most often dead- or rage-tapped (counted per "
+    "session), the most tapped elements, where sessions end, and typical active time. session_recordings.sessions has "
+    "{d} of them in full: the screens a user saw and what they tapped, in order, with dead and rage taps marked. Use "
+    "the patterns for how common something is and the journeys for concrete user stories; cite a session by linking "
+    "its replay URL as a Markdown link. Heatmaps are not available.")
 DATA_SCOPE_WITH_RECORDINGS = (
     "Aggregated Microsoft Clarity Data Export metrics, plus {n} frame(s) from real user session recordings or "
     "screenshots, attached as images in playback order. The frames show what users actually saw and did; use them "
@@ -67,14 +75,17 @@ DATA_SCOPE_WITH_RECORDINGS = (
     "targets are not available.")
 
 
-def data_scope(frames: int, sessions: int) -> str:
+def data_scope(frames: int, sampled: int, detailed: int, history: bool) -> str:
     """What the model can and can't see, so it neither under-uses nor invents evidence."""
-    if sessions:
-        scope = DATA_SCOPE_WITH_SESSIONS.format(n=sessions)
-        if frames:
-            scope += f" {frames} frame(s) the user attached from recordings or screenshots are also included as images."
-        return scope
-    return DATA_SCOPE_WITH_RECORDINGS.format(n=frames) if frames else DATA_SCOPE
+    parts = []
+    if history:
+        parts.append(PERIOD_HISTORY_SCOPE)
+    if sampled:
+        parts.append(DATA_SCOPE_WITH_SESSIONS.format(n=sampled, d=detailed))
+    if frames:
+        parts.append(DATA_SCOPE_WITH_RECORDINGS.format(n=frames) if not sampled else
+                     f"{frames} frame(s) the user attached from recordings or screenshots are also included as images.")
+    return " ".join(parts) if parts else DATA_SCOPE
 
 
 class AuditError(Exception):
@@ -309,6 +320,7 @@ def compute_kpis(norm: dict[str, Any]) -> dict[str, Any]:
         "rapid_scroll_session_pct": round(rate("ExcessiveScroll") * 100, 1),
         "script_error_session_pct": round(rate("ScriptErrorCount") * 100, 1),
         "error_click_count": s("ErrorClickCount", "total"),
+        "error_click_session_pct": round(rate("ErrorClickCount") * 100, 1),
         # Product-level view of the same sessions.
         "total_users": s("Traffic", "users"),
         "bot_sessions": s("Traffic", "bot_sessions"),
@@ -319,6 +331,19 @@ def compute_kpis(norm: dict[str, Any]) -> dict[str, Any]:
         # Share of sessions with visible frustration (rage or dead clicks/taps); a lower bound since they overlap.
         "frustrated_session_pct": round(max(rate("RageClickCount"), rate("DeadClickCount")) * 100, 1),
     }
+
+
+HEALTH_PCT_KEYS = {
+    "RageClickCount": "rage_session_pct", "DeadClickCount": "dead_click_session_pct",
+    "QuickbackClick": "quickback_session_pct", "ExcessiveScroll": "rapid_scroll_session_pct",
+    "ErrorClickCount": "error_click_session_pct", "ScriptErrorCount": "script_error_session_pct",
+}
+
+
+def health_from_pcts(kpis: dict[str, Any]) -> int:
+    """The same health formula as compute_kpis, from session percentages (used when period-wide numbers replace them)."""
+    penalty = sum(w * min(1.0, kpis.get(HEALTH_PCT_KEYS[m], 0.0) / 10.0) for m, w in HEALTH_WEIGHTS.items())
+    return max(0, min(100, round(100 - penalty)))
 
 
 def top_targets(norm: dict[str, Any], limit: int) -> list[dict[str, Any]]:
@@ -505,14 +530,17 @@ class PreparedAudit:
     notes: list[str] = field(default_factory=list)
     days_covered: int = 0
     frames: list[str] = field(default_factory=list)
+    empty: bool = False  # no detailed metrics (a long range answered from period history only)
 
 
 class AuditService:
     def __init__(self, settings: Settings, storage: Storage, clarity: ClarityClient, claude: ClaudeService,
-                 vault: TokenVault, recordings: RecordingsClient | None = None) -> None:
+                 vault: TokenVault, recordings: RecordingsClient | None = None,
+                 dashboard: DashboardClient | None = None) -> None:
         self._s, self._storage, self._clarity, self._claude = settings, storage, clarity, claude
         self._vault = vault
         self._recordings = recordings
+        self._dashboard = dashboard
 
     @staticmethod
     def resolve_range(req: AuditRequest) -> tuple[date, date, int]:
@@ -547,30 +575,78 @@ class AuditService:
         return norm
 
     async def prepare(self, req: AuditRequest, policy: TierPolicy, source: ClaritySource) -> PreparedAudit:
-        """Metrics and real session recordings for the period, fetched concurrently."""
-        start, end, _ = self.resolve_range(req)
+        """Detailed metrics, period-wide history (long/custom ranges) and real session recordings, fetched concurrently.
+
+        However large the range, the cost is bounded: a fixed set of dashboard questions, one recordings request per
+        sample category, and at most one Data Export request.
+        """
+        start, end, span = self.resolve_range(req)
+        long_range = span > 3 or end != utc_today()
         rec_task = asyncio.create_task(self._sample_recordings(source, start, end)) if self._recordings else None
+        dash_task = asyncio.create_task(self._period_history(source, start, end)) if long_range and self._dashboard else None
         try:
-            prepared = await self._prepare_metrics(req, policy, source)
+            prepared = await self._prepare_metrics(req, policy, source, allow_empty=dash_task is not None)
+            history = await dash_task if dash_task else None
+            if prepared.empty and not history:
+                raise AuditError(404, "NO_DATA", "Clarity has no data for this project and period yet.")
+            recordings = await rec_task if rec_task else None
         except BaseException:
-            if rec_task:
-                rec_task.cancel()
+            for t in (rec_task, dash_task):
+                if t:
+                    t.cancel()
             raise
-        sessions = await rec_task if rec_task else []
         payload = prepared.payload
-        if sessions:
-            payload.setdefault("session_recordings", {})["sessions"] = sessions
-            why = Counter(s["selected_for"] for s in sessions)
-            prepared.notes.append(f"Reviewed {len(sessions)} real session recordings from Clarity ("
-                                  + ", ".join(f"{n} with {w}" if w != "most active" else f"{n} most active"
-                                              for w, n in why.items()) + ").")
+        if history:
+            self._apply_history(prepared, history, span)
+        elif dash_task:
+            prepared.notes.append("Clarity's dashboard didn't answer for the full period, so long-range figures come "
+                                  "from the last 3 days and saved nightly history.")
+        detailed = 0
+        if recordings:
+            detailed = len(recordings["sessions"])
+            payload.setdefault("session_recordings", {}).update(recordings)
+            prepared.notes.append(
+                f"Reviewed {recordings['sampled_sessions']} real session recordings from Clarity, sampled across the "
+                f"period (rage and dead taps, quick backs, early exits and the most active users); {detailed} are "
+                "read in full.")
         elif self._recordings:
             prepared.notes.append("Clarity didn't return session recordings for this period, so this report is "
                                   "based on metrics only.")
-        payload["report_context"]["data_scope"] = data_scope(len(prepared.frames), len(sessions))
+        payload["report_context"]["data_scope"] = data_scope(
+            len(prepared.frames), recordings["sampled_sessions"] if recordings else 0, detailed, bool(history))
         return prepared
 
-    async def _sample_recordings(self, source: ClaritySource, start: date, end: date) -> list[dict[str, Any]]:
+    def _apply_history(self, prepared: PreparedAudit, history: dict[str, Any], span: int) -> None:
+        """Period-wide numbers replace the 3-day sample where Clarity's answer was recognisable."""
+        overrides = history_kpis(history)
+        prepared.kpis.update(overrides)
+        if any(k.endswith("_pct") for k in overrides):
+            prepared.kpis["health_score"] = health_from_pcts(prepared.kpis)
+        prepared.payload["period_history"] = history
+        ctx = prepared.payload["report_context"]
+        detail_days = ctx["days_covered"]
+        ctx["days_covered"] = prepared.days_covered = span
+        # The dashboard covers the whole period and includes devices, so the 3-day caveats no longer apply.
+        prepared.notes[:] = [n for n in prepared.notes
+                             if not n.startswith(("Covers ", "Device breakdown is only", "History tracking just started"))]
+        if detail_days == 0:
+            prepared.notes.append(
+                f"Totals, daily trends and audiences cover all {span} days (Clarity dashboard). Page-level friction "
+                "detail isn't available for past ranges, because Clarity's export API only shares the last 3 days.")
+        elif detail_days < span:
+            prepared.notes.append(
+                f"Totals, daily trends and audiences cover all {span} days (Clarity dashboard). Page- and screen-level "
+                f"friction detail covers the latest {detail_days}, because Clarity's export API only shares the last 3 days.")
+
+    async def _period_history(self, source: ClaritySource, start: date, end: date) -> dict[str, Any] | None:
+        assert self._dashboard is not None
+        try:
+            return await asyncio.wait_for(self._dashboard.period(source, start, end), timeout=DASHBOARD_WAIT_SECONDS)
+        except Exception:  # noqa: BLE001 - history is a bonus over the 3-day export
+            log.warning("Clarity dashboard history unavailable for %s", source.key, exc_info=True)
+            return None
+
+    async def _sample_recordings(self, source: ClaritySource, start: date, end: date) -> dict[str, Any] | None:
         assert self._recordings is not None
         start_dt = datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc)
         end_dt = datetime.now(timezone.utc) if end >= utc_today() else datetime.combine(end, datetime.max.time(), tzinfo=timezone.utc)
@@ -578,9 +654,11 @@ class AuditService:
             return await asyncio.wait_for(self._recordings.sample(source, start_dt, end_dt), timeout=RECORDINGS_WAIT_SECONDS)
         except Exception:  # noqa: BLE001 - recordings are a bonus; never fail the audit over them
             log.warning("Session recordings unavailable for %s", source.key, exc_info=True)
-            return []
+            return None
 
-    async def _prepare_metrics(self, req: AuditRequest, policy: TierPolicy, source: ClaritySource) -> PreparedAudit:
+    async def _prepare_metrics(self, req: AuditRequest, policy: TierPolicy, source: ClaritySource,
+                               allow_empty: bool = False) -> PreparedAudit:
+        """allow_empty: a long range whose detail is missing can still be answered from period-wide history."""
         start, end, span = self.resolve_range(req)
         today, notes = utc_today(), []
         device_norm = None
@@ -610,7 +688,7 @@ class AuditService:
             older_end = today - timedelta(days=3) if live_days else end
             snaps = await self._storage.get_snapshots(source.key, start, older_end) if older_end >= start else []
             parts += [n for _, n in snaps]
-            if not parts:
+            if not parts and not allow_empty:
                 raise AuditError(404, "NO_DATA", "There's no saved history for this period yet, and Clarity only "
                                                  "shares the last 3 days.")
             norm = merge(parts)
@@ -623,7 +701,8 @@ class AuditService:
                 notes.append("Device breakdown is only available for ranges of 3 days or less.")
 
         kpis = compute_kpis(norm)
-        if kpis["total_sessions"] == 0 and not any(norm.values()):
+        empty = kpis["total_sessions"] == 0 and not any(norm.values())
+        if empty and not allow_empty:
             raise AuditError(404, "NO_DATA", "Clarity returned no data for this project and period.")
 
         frames = list(req.recording_frames)
@@ -638,7 +717,7 @@ class AuditService:
                 "platform": "mobile_app" if mobile else "website",
                 "timeframe": req.timeframe.value, "period_start": start.isoformat(), "period_end": end.isoformat(),
                 "days_covered": covered, "friction_target_granularity": granularity,
-                "data_scope": data_scope(len(frames), 0),
+                "data_scope": data_scope(len(frames), 0, 0, False),
                 "data_notes": notes,
             },
             "totals": kpis,
@@ -657,7 +736,7 @@ class AuditService:
             payload["device_breakdown"] = device_breakdown(device_norm)
         elif policy.device_breakdown and devices:
             payload["device_breakdown"] = [{"device": d["name"], "sessions": d["sessions"]} for d in devices]
-        return PreparedAudit(payload=payload, kpis=kpis, notes=notes, days_covered=covered, frames=frames)
+        return PreparedAudit(payload=payload, kpis=kpis, notes=notes, days_covered=covered, frames=frames, empty=empty)
 
     async def events(self, prepared: PreparedAudit, policy: TierPolicy, usage: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
         yield {"type": "meta", "tier": policy.tier.value, "kpis": prepared.kpis, "notes": prepared.notes,

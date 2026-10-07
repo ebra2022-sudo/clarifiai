@@ -17,6 +17,7 @@ from models import (AuditRequest, ConnectProjectRequest, ReconnectProjectRequest
                     UpdateProjectRequest)
 from services.billing import BillingError, PlayBillingVerifier
 from services.clarity_ai import AuditError, AuditService, ClarityClient, ClaudeService, env_source, normalize, utc_today
+from services.dashboard import DashboardClient
 from services.recordings import RecordingsClient
 from services.projects import ClaritySource, TokenError, TokenVault, inspect_clarity_token, token_expiry
 from services.storage import Connection, Storage, UserRecord
@@ -48,7 +49,8 @@ async def lifespan(app: FastAPI):
         log.warning("TOKEN_ENCRYPTION_KEY is not set: users can't connect Clarity projects from the app.")
     clarity = ClarityClient(settings, storage, http)
     recordings = RecordingsClient(storage, http) if settings.recordings_enabled else None
-    audit = AuditService(settings, storage, clarity, ClaudeService(settings), vault, recordings)
+    dashboard = DashboardClient(storage, http) if settings.period_history_enabled else None
+    audit = AuditService(settings, storage, clarity, ClaudeService(settings), vault, recordings, dashboard)
     app.state.settings, app.state.storage, app.state.audit = settings, storage, audit
     app.state.clarity, app.state.vault = clarity, vault
     app.state.billing = PlayBillingVerifier(settings, http)
