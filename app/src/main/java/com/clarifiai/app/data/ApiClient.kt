@@ -223,6 +223,12 @@ class ApiClient(context: Context) {
         execute(request("api/v1/projects/$id").delete().build()) { }
     }
 
+    /** The session recordings reviewed for a report (cached server-side from the audit; doesn't use an audit). */
+    suspend fun recordings(dto: AuditRequestDto): RecordingSample = withContext(Dispatchers.IO) {
+        val body = AppJson.encodeToString(dto).toRequestBody(jsonType)
+        execute(request("api/v1/analytics/recordings").post(body).build()) { AppJson.decodeFromString(it.body.string()) }
+    }
+
     fun streamAudit(dto: AuditRequestDto): Flow<AuditEvent> = flow {
         val body = AppJson.encodeToString(dto).toRequestBody(jsonType)
         val call = http.newCall(request("api/v1/analytics/audit").post(body).build())

@@ -14,6 +14,7 @@ import com.clarifiai.app.data.AuditEvent
 import com.clarifiai.app.data.AuditRequestDto
 import com.clarifiai.app.data.Entitlements
 import com.clarifiai.app.data.Kpis
+import com.clarifiai.app.data.RecordingSample
 import com.clarifiai.app.data.reviewedRecordings
 import com.clarifiai.app.data.ProjectDto
 import com.clarifiai.app.data.Tier
@@ -71,6 +72,8 @@ data class DashboardUiState(
     val paywall: PaywallState? = null,
     val offers: List<PlanOffer> = emptyList(),
     val reportTimeframeLabel: String = "",
+    /** Real session recordings behind the current report (fetched after the audit; shown in the app and the PDF). */
+    val reportSessions: RecordingSample? = null,
     /** What the current report was built from (shown with the report and in the PDF). */
     val reportDaysCovered: Int = 0,
     val reportRequestedDays: Int = 0,
@@ -311,10 +314,11 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
             _state.update {
                 it.copy(loading = true, markdown = "", kpis = null, error = null, lockedMessage = null,
                     notes = emptyList(), reportTimeframeLabel = s.timeframe.label,
-                    reportRequestedDays = requestedDays, reportDaysCovered = 0)
+                    reportRequestedDays = requestedDays, reportDaysCovered = 0, reportSessions = null)
             }
             val sb = StringBuilder()
             var lastPush = 0L
+            var completed = false
             try {
                 api.streamAudit(dto).collect { ev ->
                     when (ev) {
@@ -334,7 +338,7 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
                         }
                         is AuditEvent.Locked -> _state.update { it.copy(lockedMessage = ev.message) }
                         is AuditEvent.Failure -> _state.update { it.copy(error = ev.message) }
-                        AuditEvent.Done -> Unit
+                        AuditEvent.Done -> completed = true
                     }
                 }
             } catch (e: CancellationException) {
@@ -345,8 +349,17 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
                 _state.update { it.copy(error = "Something went wrong. Please try again.") }
             } finally {
                 _state.update { it.copy(loading = false, markdown = sb.toString()) }
+                if (completed && _state.value.reportRecordings > 0) loadReportSessions(dto)
                 refreshEntitlements()
                 refreshProjects() // updates today's Clarity request count
+            }
+        }
+    }
+
+    private fun loadReportSessions(dto: AuditRequestDto) {
+        viewModelScope.launch {
+            runCatching { api.recordings(dto) }.onSuccess { sample ->
+                _state.update { it.copy(reportSessions = sample.takeIf { s -> s.sessions.isNotEmpty() }) }
             }
         }
     }
@@ -391,6 +404,7 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
                     PdfExportUtility.ReportMeta(
                         projectName = projectName, timeframeLabel = s.reportTimeframeLabel, kpis = s.kpis,
                         notes = s.notes, whiteLabel = s.entitlements.features.whiteLabelPdf, generatedAt = now,
+                        sessions = s.reportSessions,
                     ),
                 )
                 val report = reports.save(
