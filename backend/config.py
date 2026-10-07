@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     dev_allow_tier_override: bool = False
     # Pull real session recordings (timelines of screens and taps) from Clarity for every audit.
     recordings_enabled: bool = True
+    # Answer long and custom ranges with period-wide numbers from Clarity's dashboard.
+    period_history_enabled: bool = True
 
     def token_for(self, project_id: str) -> str | None:
         try:
