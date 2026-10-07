@@ -170,13 +170,39 @@ async def test_empty_ai_output_is_an_error(client, storage, claude):
     assert await usage_count(storage) == 0
 
 
-async def test_long_range_uses_snapshots_with_coverage_note(client, settings):
+async def test_long_range_takes_last_3_days_live_and_older_days_from_history(client, settings, storage, clarity_mock):
+    from datetime import timedelta
+    from services.clarity_ai import normalize, utc_today
+    from tests.conftest import clarity_payload
     settings.dev_allow_tier_override = True
-    r = await client.post(AUDIT, json={"project_id": "p1", "timeframe": "LAST_MONTH"}, headers=headers(**{"X-Dev-Tier": "MAX"}))
+    h = headers(**{"X-Dev-Tier": "MAX"})
+    r = await client.post(AUDIT, json={"project_id": "p1", "timeframe": "LAST_MONTH"}, headers=h)
     meta = ndjson(r)[0]
-    assert meta["days_covered"] == 1
-    assert any("History tracking just started" in n for n in meta["notes"])
-    assert any("Covers 1 of 30" in n for n in meta["notes"])
+    assert meta["days_covered"] == 3
+    assert any("Covers 3 of 30 days" in n and "only shares the last 3 days" in n for n in meta["notes"])
+    assert "numOfDays=3" in str(clarity_mock.requests[-1].url)
+
+    # Nightly history for days 4..10 ago extends coverage; the live window's days aren't double counted.
+    today = utc_today()
+    for d in range(1, 11):
+        await storage.save_snapshot("env:p1", today - timedelta(days=d), normalize(clarity_payload(), "URL"))
+    settings.cache_ttl_seconds = 0
+    r = await client.post(AUDIT, json={"project_id": "p1", "timeframe": "LAST_MONTH"}, headers=h)
+    assert ndjson(r)[0]["days_covered"] == 3 + 8  # days 3..10 ago from history (day 3 ago is outside the live window)
+
+
+async def test_cron_endpoint_snapshots_only_inside_the_window(client, storage, settings):
+    from datetime import datetime, timezone
+    from main import app
+    svc = app.state.audit
+    late = datetime(2026, 10, 6, 23, 30, tzinfo=timezone.utc)
+    after_midnight = datetime(2026, 10, 7, 0, 40, tzinfo=timezone.utc)
+    midday = datetime(2026, 10, 7, 12, 0, tzinfo=timezone.utc)
+    assert str(svc.snapshot_day(late)) == "2026-10-06"
+    assert str(svc.snapshot_day(after_midnight)) == "2026-10-06"
+    assert svc.snapshot_day(midday) is None
+    r = await client.get("/api/v1/cron/snapshots")
+    assert r.status_code == 200 and "saved" in r.json()
 
 
 async def test_custom_range_validation(client, settings):

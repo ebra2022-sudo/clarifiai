@@ -43,7 +43,9 @@ def test_audience_context_is_ranked_and_scrubbed():
     assert a["popular_screens"][0] == {"name": "CheckoutScreen", "sessions": 25}
     assert "jane@doe.com" not in str(a)
     assert a["operating_systems"][0]["name"] == "Android"
-    assert a["engagement_time"] == {"total_time": 900, "active_time": 700}
+    assert "engagement_time" not in a  # engagement is reported as product KPIs instead
+    k = compute_kpis(normalize(MOBILE, "URL"))
+    assert (k["session_seconds"], k["engaged_seconds"]) == (900, 700)
 
 
 async def test_mobile_audit_payload_and_max_device_breakdown_without_extra_request(client, clarity_mock, claude, settings):

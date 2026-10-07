@@ -49,9 +49,11 @@ class FakeClaude:
         ]
         self.error: AuditError | None = None
         self.calls: list[dict[str, Any]] = []
+        self.frames: list[list[str]] = []
 
-    async def stream_backlog(self, payload: dict[str, Any]) -> AsyncIterator[str]:
+    async def stream_backlog(self, payload: dict[str, Any], frames: list[str] | None = None) -> AsyncIterator[str]:
         self.calls.append(payload)
+        self.frames.append(list(frames or []))
         for c in self.chunks:
             yield c
         if self.error:

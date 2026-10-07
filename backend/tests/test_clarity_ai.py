@@ -16,7 +16,7 @@ def test_normalize_keeps_only_whitelisted_metrics_and_fields():
     ]
     out = normalize(raw, "URL")
     assert set(out) == {"Traffic", "RageClickCount"}
-    assert out["Traffic"] == {"/home": {"sessions": 120, "users": 90}}
+    assert out["Traffic"] == {"/home": {"sessions": 120, "users": 90, "bot_sessions": 0, "views_x100": 0}}
     assert out["RageClickCount"] == {"/home": {"sessions": 4, "pageviews": 6, "total": 11}}
 
 
@@ -34,7 +34,7 @@ def test_normalize_aggregates_duplicate_dimension_values_and_handles_quirks():
     out = normalize(raw, "URL")
     assert out["DeadClickCount"]["/a"] == {"sessions": 3, "pageviews": 2, "total": 3}
     assert out["DeadClickCount"]["(all)"] == {"sessions": 7, "pageviews": 0, "total": 7}
-    assert out["Traffic"] == {"(all)": {"sessions": 5, "users": 4}}
+    assert out["Traffic"] == {"(all)": {"sessions": 5, "users": 4, "bot_sessions": 0, "views_x100": 0}}
     assert out["QuickbackClick"] == {}
 
 
@@ -51,7 +51,7 @@ def test_normalize_accepts_metric_names_with_spaces():
 
 def test_normalize_device_dimension():
     raw = [{"metricName": "Traffic", "information": [{"totalSessionCount": "9", "Device": "Mobile"}]}]
-    assert normalize(raw, "Device") == {"Traffic": {"Mobile": {"sessions": 9, "users": 0}}}
+    assert normalize(raw, "Device") == {"Traffic": {"Mobile": {"sessions": 9, "users": 0, "bot_sessions": 0, "views_x100": 0}}}
 
 
 # ---------------------------------------------------------------- compute_kpis
