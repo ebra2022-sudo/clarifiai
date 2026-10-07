@@ -48,6 +48,9 @@ data class AuditRequestDto(
     val timeframe: String,
     @SerialName("start_date") val startDate: String? = null,
     @SerialName("end_date") val endDate: String? = null,
+    /** Base64 JPEG frames from session recordings or screenshots the user attached (max 12). */
+    @SerialName("recording_frames") val recordingFrames: List<String> = emptyList(),
+    @SerialName("recording_note") val recordingNote: String? = null,
 )
 
 @Serializable
@@ -62,6 +65,11 @@ data class Kpis(
     @SerialName("rapid_scroll_session_pct") val rapidScrollSessionPct: Double = 0.0,
     @SerialName("script_error_session_pct") val scriptErrorSessionPct: Double = 0.0,
     @SerialName("error_click_count") val errorClickCount: Int = 0,
+    @SerialName("total_users") val totalUsers: Int = 0,
+    @SerialName("views_per_session") val viewsPerSession: Double = 0.0,
+    @SerialName("engaged_seconds") val engagedSeconds: Int = 0,
+    @SerialName("session_seconds") val sessionSeconds: Int = 0,
+    @SerialName("frustrated_session_pct") val frustratedSessionPct: Double = 0.0,
 )
 
 @Serializable
@@ -106,6 +114,9 @@ data class ProjectDto(
     /** Clarity's own project ID, used only to open recordings in the Clarity dashboard. */
     @SerialName("clarity_project_id") val clarityProjectId: String? = null,
     @SerialName("token_expires_at") val tokenExpiresAt: String? = null,
+    /** Daily snapshots saved for this project; ranges longer than 3 days are built from them. */
+    @SerialName("history_days") val historyDays: Int = 0,
+    @SerialName("history_since") val historySince: String? = null,
     @SerialName("clarity_requests") val clarityRequests: ClarityRequests = ClarityRequests(),
 ) {
     val needsReauth: Boolean get() = status == "needs_reauth"
