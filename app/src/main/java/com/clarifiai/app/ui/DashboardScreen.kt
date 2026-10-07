@@ -92,6 +92,21 @@ import com.clarifiai.app.data.Timeframe
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.model.rememberMarkdownState
 import dev.chrisbanes.haze.rememberHazeState
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material.icons.outlined.Logout
+import androidx.compose.material.icons.outlined.PlayCircle
+import androidx.compose.material.icons.outlined.TouchApp
+import androidx.compose.material.icons.outlined.UnfoldMore
+import com.clarifiai.app.data.RecordingSample
+import com.clarifiai.app.data.SessionJourney
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -128,89 +143,85 @@ fun DashboardScreen(vm: DashboardViewModel, activity: Activity) {
     }
 
     val haze = rememberHazeState()
+    val listState = rememberLazyListState()
+    val titleScrolledAway by remember { derivedStateOf { listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 140 } }
+    val topInset = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val bottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     LiquidBackground(haze) {
         Scaffold(
             containerColor = Color.Transparent,
-            snackbarHost = { SnackbarHost(snackbar) },
-            topBar = {
-                CenterAlignedTopAppBar(
-                    title = {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("Clarity AI", fontWeight = FontWeight.Bold, letterSpacing = (-0.4).sp)
-                            TierBadge(state.entitlements.tier)
+            contentWindowInsets = WindowInsets(0),
+            snackbarHost = { SnackbarHost(snackbar, Modifier.padding(bottom = 76.dp)) },
+        ) { _ ->
+            Box(Modifier.fillMaxSize()) {
+                LazyColumn(
+                    state = listState,
+                    // No horizontal padding here: the KPI carousel runs edge to edge; other items pad themselves.
+                    contentPadding = PaddingValues(top = topInset + 8.dp, bottom = bottomInset + 112.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    item {
+                        LargeTitleHeader(
+                            tier = state.entitlements.tier, savedReports = state.savedReports.size,
+                            onReports = vm::openReports, onUpgrade = vm::openUpgrade,
+                        )
+                    }
+                    item { KpiRow(state.kpis, state.loading) }
+                    item {
+                        ControlsCard(
+                            modifier = Modifier.padding(horizontal = 16.dp),
+                            projects = state.projects, selected = state.selectedProject, projectsLoaded = state.projectsLoaded,
+                            onSelect = vm::selectProject, onConnect = vm::openConnect, onDelete = { projectToDelete = it },
+                            onEdit = vm::openEdit, onReconnect = vm::openReconnect,
+                            timeframe = state.timeframe, allowed = state.entitlements.features.allowedTimeframes,
+                            customLabel = if (state.customStart != null && state.customEnd != null) "${state.customStart} → ${state.customEnd}" else null,
+                            onTimeframe = { tf ->
+                                if (tf == Timeframe.CUSTOM && Timeframe.CUSTOM.name in state.entitlements.features.allowedTimeframes) showDatePicker = true
+                                else vm.setTimeframe(tf)
+                            },
+                            usageText = state.entitlements.usage.let { u -> u.limit?.let { "${u.used} of $it audits used this month" } },
+                            historyNote = historyNote(state.timeframe, state.selectedProject),
+                        )
+                    }
+                    item {
+                        ReportCard(
+                            state, modifier = Modifier.padding(horizontal = 16.dp), onUpgrade = vm::openUpgrade, onRetry = vm::runAudit,
+                            onOpenRecordings = { url -> uriHandler.openUri(url) },
+                            onEditProject = vm::openEdit,
+                        )
+                    }
+                    state.reportSessions?.let { sample ->
+                        item {
+                            SessionsCard(sample, Modifier.padding(horizontal = 16.dp), onWatch = { url -> uriHandler.openUri(url) })
                         }
-                    },
-                    navigationIcon = {
-                        if (state.entitlements.tier != Tier.MAX) {
-                            GlassIconButton(onClick = vm::openUpgrade, modifier = Modifier.padding(start = 12.dp)) {
-                                Icon(Icons.Outlined.WorkspacePremium, "Upgrade plan", tint = Accent, modifier = Modifier.size(22.dp))
-                            }
-                        }
-                    },
-                    actions = {
-                        GlassIconButton(onClick = vm::openReports) {
-                            BadgedBox(badge = {
-                                if (state.savedReports.isNotEmpty()) Badge(containerColor = Accent, contentColor = OnAccent) {
-                                    Text("${state.savedReports.size}")
-                                }
-                            }) { Icon(Icons.Outlined.FolderOpen, "Saved reports", modifier = Modifier.size(22.dp)) }
-                        }
-                        Spacer(Modifier.size(10.dp))
-                        GlassIconButton(onClick = vm::exportPdf, enabled = !state.exporting, modifier = Modifier.padding(end = 12.dp)) {
-                            if (state.exporting) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = Accent)
-                            else Box {
-                                Icon(Icons.Outlined.PictureAsPdf, "Export PDF report", modifier = Modifier.size(22.dp),
-                                    tint = if (state.entitlements.features.pdfExport) Accent else InkFaint)
-                                if (!state.entitlements.features.pdfExport) {
-                                    Icon(Icons.Filled.Lock, null, tint = Warn, modifier = Modifier.size(11.dp).align(Alignment.BottomEnd))
-                                }
-                            }
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = Color.Transparent, scrolledContainerColor = Color.Transparent, titleContentColor = Ink,
-                    ),
-                )
-            },
-            floatingActionButton = {
-                AccentPillButton(onClick = vm::runAudit, contentPadding = PaddingValues(horizontal = 24.dp, vertical = 16.dp)) {
-                    if (state.loading) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = OnAccent)
-                    else Icon(Icons.Filled.PlayArrow, null)
-                    Text(if (state.loading) "Analysing…" else "Run audit", Modifier.padding(start = 10.dp),
-                        style = MaterialTheme.typography.labelLarge)
-                }
-            },
-        ) { padding ->
-            LazyColumn(
-                modifier = Modifier.padding(padding),
-                // No horizontal padding here: the KPI carousel runs edge to edge; other items pad themselves.
-                contentPadding = PaddingValues(top = 8.dp, bottom = 112.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                item { KpiRow(state.kpis, state.loading) }
-                item {
-                    ControlsCard(
-                        modifier = Modifier.padding(horizontal = 16.dp),
-                        projects = state.projects, selected = state.selectedProject, projectsLoaded = state.projectsLoaded,
-                        onSelect = vm::selectProject, onConnect = vm::openConnect, onDelete = { projectToDelete = it },
-                        onEdit = vm::openEdit, onReconnect = vm::openReconnect,
-                        timeframe = state.timeframe, allowed = state.entitlements.features.allowedTimeframes,
-                        customLabel = if (state.customStart != null && state.customEnd != null) "${state.customStart} to ${state.customEnd}" else null,
-                        onTimeframe = { tf ->
-                            if (tf == Timeframe.CUSTOM && Timeframe.CUSTOM.name in state.entitlements.features.allowedTimeframes) showDatePicker = true
-                            else vm.setTimeframe(tf)
-                        },
-                        usageText = state.entitlements.usage.let { u -> u.limit?.let { "${u.used}/$it audits used this month" } },
-                        historyNote = historyNote(state.timeframe, state.selectedProject),
-                    )
+                    }
                 }
 
-                item {
-                    ReportCard(
-                        state, modifier = Modifier.padding(horizontal = 16.dp), onUpgrade = vm::openUpgrade, onRetry = vm::runAudit,
-                        onOpenRecordings = { url -> uriHandler.openUri(url) },
-                        onEditProject = vm::openEdit,
-                    )
+                // iOS scroll-edge effect and the inline title once the large title has scrolled away.
+                EdgeFade(top = true, height = topInset + 12.dp, modifier = Modifier.align(Alignment.TopCenter))
+                EdgeFade(top = false, height = bottomInset + 110.dp, modifier = Modifier.align(Alignment.BottomCenter))
+                Box(Modifier.align(Alignment.TopCenter)) { CompactNavBar(titleScrolledAway, "Clarity AI") }
+
+                GlassToolbar(
+                    Modifier.align(Alignment.BottomCenter).padding(start = 20.dp, end = 20.dp, bottom = bottomInset + 12.dp).fillMaxWidth(),
+                ) {
+                    GlassIconButton(onClick = vm::exportPdf, enabled = !state.exporting, size = 48.dp) {
+                        if (state.exporting) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = Accent)
+                        else Box {
+                            Icon(Icons.Outlined.PictureAsPdf, "Export PDF report", modifier = Modifier.size(22.dp),
+                                tint = if (state.entitlements.features.pdfExport) Accent else InkFaint)
+                            if (!state.entitlements.features.pdfExport) {
+                                Icon(Icons.Filled.Lock, null, tint = Warn, modifier = Modifier.size(11.dp).align(Alignment.BottomEnd))
+                            }
+                        }
+                    }
+                    AccentPillButton(onClick = vm::runAudit, modifier = Modifier.weight(1f).height(48.dp),
+                        contentPadding = PaddingValues(horizontal = 20.dp)) {
+                        if (state.loading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = OnAccent)
+                        else Icon(Icons.Filled.PlayArrow, null, modifier = Modifier.size(20.dp))
+                        Text(if (state.loading) "Analysing…" else "Run audit", Modifier.padding(start = 8.dp),
+                            style = MaterialTheme.typography.labelLarge)
+                    }
                 }
             }
         }
@@ -239,24 +250,12 @@ fun DashboardScreen(vm: DashboardViewModel, activity: Activity) {
     }
 
     projectToDelete?.let { p ->
-        AlertDialog(
-            onDismissRequest = { projectToDelete = null },
-            containerColor = SheetColor, shape = DialogShape,
-            icon = { Icon(Icons.Outlined.Delete, null, tint = Bad) },
-            title = { Text("Delete project?") },
-            text = {
-                Text(
-                    "Are you sure you want to delete \"${p.name}\"? It's removed from your saved projects and its stored " +
-                        "Clarity token is erased. To use it again you'll need to paste a token.",
-                    color = InkMuted,
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = { vm.deleteProject(p.id); projectToDelete = null }) {
-                    Text("Delete", color = Bad, fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = { TextButton(onClick = { projectToDelete = null }) { Text("Cancel", color = Accent) } },
+        GlassAlert(
+            title = "Delete \"${p.name}\"?",
+            message = "It's removed from your saved projects and its stored Clarity token is erased. To use it again you'll need to paste a token.",
+            confirmLabel = "Delete", destructive = true,
+            onConfirm = { vm.deleteProject(p.id); projectToDelete = null },
+            onDismiss = { projectToDelete = null },
         )
     }
 
@@ -275,6 +274,97 @@ fun DashboardScreen(vm: DashboardViewModel, activity: Activity) {
             onRestore = vm.billing::restore,
             onDismiss = vm::dismissPaywall,
         )
+    }
+}
+
+/** iOS large title with today's date as an eyebrow; actions sit as glass buttons on the trailing edge. */
+@Composable
+private fun LargeTitleHeader(tier: Tier, savedReports: Int, onReports: () -> Unit, onUpgrade: () -> Unit) {
+    val today = remember { java.time.LocalDate.now().format(java.time.format.DateTimeFormatter.ofPattern("EEEE, MMMM d")) }
+    Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 16.dp, top = 12.dp), verticalAlignment = Alignment.Bottom) {
+        Column(Modifier.weight(1f)) {
+            Text(today.uppercase(), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, color = InkMuted)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Clarity AI", style = MaterialTheme.typography.headlineLarge, color = Ink)
+                Spacer(Modifier.size(8.dp))
+                TierBadge(tier)
+            }
+        }
+        if (tier != Tier.MAX) {
+            GlassIconButton(onClick = onUpgrade) {
+                Icon(Icons.Outlined.WorkspacePremium, "Upgrade plan", tint = Accent, modifier = Modifier.size(22.dp))
+            }
+            Spacer(Modifier.size(10.dp))
+        }
+        GlassIconButton(onClick = onReports) {
+            BadgedBox(badge = {
+                if (savedReports > 0) Badge(containerColor = Accent, contentColor = OnAccent) { Text("$savedReports") }
+            }) { Icon(Icons.Outlined.FolderOpen, "Saved reports", modifier = Modifier.size(22.dp)) }
+        }
+    }
+}
+
+/** The real recordings behind the report, as an iOS grouped list: patterns first, then each session with its replay. */
+@Composable
+private fun SessionsCard(sample: RecordingSample, modifier: Modifier = Modifier, onWatch: (String) -> Unit) {
+    var showAll by remember { mutableStateOf(false) }
+    val sessions = if (showAll) sample.sessions else sample.sessions.take(4)
+    GlassCard(modifier.fillMaxWidth(), contentPadding = PaddingValues(vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconTile(Icons.Outlined.PlayCircle, Accent)
+            Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                Text("Sessions reviewed", style = MaterialTheme.typography.titleMedium, color = Ink)
+                Text("${sample.sampledSessions} sampled from Clarity · ${sample.sessions.size} read in full",
+                    style = MaterialTheme.typography.labelMedium, color = InkMuted)
+            }
+        }
+        sample.patterns?.let { p ->
+            val chips = p.mostDeadTapped.take(3).map { "Dead taps · ${it.element} (${it.sessions})" to Warn } +
+                p.mostRageTapped.take(2).map { "Rage taps · ${it.element} (${it.sessions})" to Bad }
+            if (chips.isNotEmpty()) {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(horizontal = 16.dp)) {
+                    items(chips) { (text, color) -> Chip(text, color) }
+                }
+            }
+        }
+        Column(Modifier.padding(horizontal = 16.dp).fillMaxWidth().glassControl()) {
+            sessions.forEachIndexed { i, s ->
+                if (i > 0) RowSeparator(inset = 52.dp)
+                SessionRow(s, onWatch)
+            }
+        }
+        if (sample.sessions.size > 4) {
+            TextButton(onClick = { showAll = !showAll }, modifier = Modifier.padding(horizontal = 8.dp)) {
+                Text(if (showAll) "Show fewer" else "Show all ${sample.sessions.size}", color = Accent)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SessionRow(s: SessionJourney, onWatch: (String) -> Unit) {
+    val (icon, color) = when {
+        "rage" in s.selectedFor -> Icons.Outlined.Bolt to Bad
+        "dead" in s.selectedFor || "quick" in s.selectedFor -> Icons.Outlined.TouchApp to Warn
+        "minute" in s.selectedFor -> Icons.Outlined.Logout to Accent
+        else -> Icons.Outlined.Insights to Good
+    }
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 60.dp)
+            .clickable(enabled = s.replay != null) { s.replay?.let(onWatch) }
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconTile(icon, color, size = 30.dp)
+        Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+            Text(
+                s.selectedFor.replaceFirstChar { it.uppercase() } + (s.shortActiveTime?.let { " · $it" } ?: ""),
+                style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, color = Ink,
+            )
+            Text(s.keyMoments(2).joinToString("  ·  ").ifEmpty { s.started.orEmpty() },
+                style = MaterialTheme.typography.labelMedium, color = InkMuted, maxLines = 2)
+        }
+        if (s.replay != null) Icon(Icons.Outlined.PlayCircle, "Watch replay", tint = Accent, modifier = Modifier.size(24.dp))
     }
 }
 
@@ -338,8 +428,7 @@ private fun ControlsCard(
     timeframe: Timeframe, allowed: List<String>, customLabel: String?,
     onTimeframe: (Timeframe) -> Unit, usageText: String?, historyNote: String? = null,
 ) {
-    var expanded by remember { mutableStateOf(false) }
-    GlassCard(modifier, contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    GlassCard(modifier, contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             if (projectsLoaded && projects.isEmpty()) {
                 Text("Connect your Microsoft Clarity project to start auditing.", color = InkMuted, style = MaterialTheme.typography.bodyMedium)
                 AccentPillButton(onClick = onConnect, modifier = Modifier.fillMaxWidth()) {
@@ -350,22 +439,24 @@ private fun ControlsCard(
                 ProjectPicker(projects, selected, onSelect, onConnect, onDelete, onEdit)
                 if (selected?.needsReauth == true) ReconnectBanner(selected, onReconnect)
             }
-            Box {
-                GlassControl(onClick = { expanded = true }) {
-                    Icon(Icons.Outlined.CalendarMonth, null, tint = Accent, modifier = Modifier.size(20.dp))
-                    Text(if (timeframe == Timeframe.CUSTOM && customLabel != null) customLabel else timeframe.label,
-                        Modifier.weight(1f).padding(start = 10.dp), color = Ink, style = MaterialTheme.typography.bodyLarge)
-                    Icon(Icons.Filled.KeyboardArrowDown, null, tint = InkMuted)
-                }
-                DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, containerColor = Panel, shape = GlassShapes.Control) {
-                    Timeframe.entries.forEach { tf ->
-                        val locked = tf.name !in allowed
-                        DropdownMenuItem(
-                            text = { Text(tf.label + if (locked) "  (${tf.requiredTier.label()})" else "", color = if (locked) InkMuted else Ink) },
-                            trailingIcon = { if (locked) Icon(Icons.Filled.Lock, null, tint = Warn, modifier = Modifier.size(16.dp)) },
-                            onClick = { expanded = false; onTimeframe(tf) },
-                        )
-                    }
+            // Timeframe as a UISegmentedControl; locked ranges show a lock and open the plans sheet.
+            Text("TIMEFRAME", style = MaterialTheme.typography.labelMedium, color = InkMuted, modifier = Modifier.padding(start = 4.dp, top = 4.dp))
+            SegmentedControl(
+                options = Timeframe.entries, selected = timeframe,
+                label = { when (it) {
+                    Timeframe.TODAY -> "Today"; Timeframe.LAST_3_DAYS -> "3D"; Timeframe.LAST_WEEK -> "7D"
+                    Timeframe.LAST_MONTH -> "30D"; Timeframe.CUSTOM -> "Custom"
+                } },
+                locked = { it.name !in allowed }, onSelect = onTimeframe,
+            )
+            if (timeframe == Timeframe.CUSTOM && customLabel != null) {
+                Row(
+                    Modifier.fillMaxWidth().glassControl().clickable { onTimeframe(Timeframe.CUSTOM) }.heightIn(min = 44.dp).padding(horizontal = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconTile(Icons.Outlined.CalendarMonth, Color(0xFFFF2D55), size = 28.dp)
+                    Text(customLabel, Modifier.weight(1f).padding(start = 12.dp), style = MaterialTheme.typography.bodyMedium, color = Ink)
+                    Text("Change", style = MaterialTheme.typography.bodyMedium, color = Accent)
                 }
             }
             historyNote?.let {
@@ -382,7 +473,7 @@ private fun ControlsCard(
 @Composable
 private fun GlassControl(onClick: () -> Unit, content: @Composable RowScope.() -> Unit) {
     Row(
-        Modifier.fillMaxWidth().glassControl().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 14.dp),
+        Modifier.fillMaxWidth().glassControl().clickable(onClick = onClick).heightIn(min = 56.dp).padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically, content = content,
     )
 }
@@ -395,7 +486,7 @@ private fun ProjectPicker(
     var expanded by remember { mutableStateOf(false) }
     Box {
         GlassControl(onClick = { expanded = true }) {
-            GlassBadge(Accent, size = 36.dp) { Icon(Icons.Outlined.Insights, null, tint = Accent, modifier = Modifier.size(20.dp)) }
+            IconTile(Icons.Outlined.Insights, Accent)
             Column(Modifier.weight(1f).padding(start = 12.dp)) {
                 Text(selected?.name ?: "Choose a project", color = Ink, style = MaterialTheme.typography.titleMedium)
                 selected?.let {
@@ -403,7 +494,7 @@ private fun ProjectPicker(
                     else Text(clarityRequestsLabel(it), color = InkMuted, style = MaterialTheme.typography.labelMedium)
                 }
             }
-            Icon(Icons.Filled.KeyboardArrowDown, null, tint = InkMuted)
+            Icon(Icons.Outlined.UnfoldMore, "Change project", tint = InkFaint)
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, containerColor = Panel, shape = GlassShapes.Control) {
             projects.forEach { p ->
@@ -476,7 +567,7 @@ private fun ReportCard(
     val markdownState = rememberMarkdownState(state.markdown, retainState = true)
     GlassCard(modifier = modifier.fillMaxWidth()) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                GlassBadge(Accent, size = 36.dp) { Icon(Icons.Outlined.AutoAwesome, null, tint = Accent, modifier = Modifier.size(20.dp)) }
+                IconTile(Icons.Outlined.AutoAwesome, Color(0xFF5E5CE6))
                 Text("Executive Backlog", Modifier.padding(start = 12.dp), style = MaterialTheme.typography.titleLarge, color = Ink)
             }
             if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth().clip(GlassShapes.Pill), color = Accent, trackColor = Hairline)

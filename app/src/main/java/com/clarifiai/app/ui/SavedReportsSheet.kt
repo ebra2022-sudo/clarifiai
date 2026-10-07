@@ -116,22 +116,12 @@ fun SavedReportsSheet(
     }
 
     toDelete?.let { r ->
-        AlertDialog(
-            onDismissRequest = { toDelete = null },
-            containerColor = SheetColor, shape = DialogShape,
-            icon = { Icon(Icons.Outlined.Delete, null, tint = Bad) },
-            title = { Text("Delete report?") },
-            text = {
-                Text(
-                    "Are you sure you want to delete the ${r.timeframeLabel.lowercase()} report for \"${r.projectName}\" " +
-                        "from ${formatDate(r.createdAt)}? Copies you shared or saved elsewhere aren't affected.",
-                    color = InkMuted,
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = { onDelete(r); toDelete = null }) { Text("Delete", color = Bad, fontWeight = FontWeight.Bold) }
-            },
-            dismissButton = { TextButton(onClick = { toDelete = null }) { Text("Cancel", color = Accent) } },
+        GlassAlert(
+            title = "Delete report?",
+            message = "The ${r.timeframeLabel.lowercase()} report for \"${r.projectName}\" from ${formatDate(r.createdAt)} will be " +
+                "removed from this device. Copies you shared or saved elsewhere aren't affected.",
+            confirmLabel = "Delete", destructive = true,
+            onConfirm = { onDelete(r); toDelete = null }, onDismiss = { toDelete = null },
         )
     }
 }
