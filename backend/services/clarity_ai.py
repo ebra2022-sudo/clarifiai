@@ -66,9 +66,12 @@ DATA_SCOPE_WITH_SESSIONS = (
     "(sessions with rage taps, dead taps, quick backs, early exits, and the most active users). "
     "session_recordings.patterns summarises all {n}: the elements most often dead- or rage-tapped (counted per "
     "session), the most tapped elements, where sessions end, and typical active time. session_recordings.sessions has "
-    "{d} of them in full: the screens a user saw and what they tapped, in order, with dead and rage taps marked. Use "
-    "the patterns for how common something is and the journeys for concrete user stories; cite a session by linking "
-    "its replay URL as a Markdown link. Heatmaps are not available.")
+    "{d} of them in full, each with an id (S1, S2, ...): the screens a user saw and what they tapped, in order, each "
+    "event prefixed with its time in the replay (mm:ss), dead and rage taps marked. Use the patterns for how common "
+    "something is and the journeys for concrete user stories. Put proof right after every claim it supports: a "
+    "Markdown link whose text is the session id and the moment, linking that session's replay URL, e.g. "
+    "[S3 at 04:11](https://clarity.microsoft.com/player/...). Every finding needs at least one such link. Heatmaps are "
+    "not available.")
 DATA_SCOPE_WITH_RECORDINGS = (
     "Aggregated Microsoft Clarity Data Export metrics, plus {n} frame(s) from real user session recordings or "
     "screenshots, attached as images in playback order. The frames show what users actually saw and did; use them "
