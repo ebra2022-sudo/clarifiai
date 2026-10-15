@@ -13,11 +13,12 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from config import Settings, get_settings
-from models import (AuditRequest, ConnectProjectRequest, ReconnectProjectRequest, SubscriptionVerifyRequest, Tier,
+from models import (AuditRequest, ConnectProjectRequest, FunnelRequest, ReconnectProjectRequest, SubscriptionVerifyRequest, Tier,
                     UpdateProjectRequest)
 from services.billing import BillingError, PlayBillingVerifier
 from services.clarity_ai import AuditError, AuditService, ClarityClient, ClaudeService, env_source, normalize, utc_today
 from services.dashboard import DashboardClient
+from services.funnel import FunnelService, utc_range
 from services.recordings import RecordingsClient
 from services.projects import ClaritySource, TokenError, TokenVault, inspect_clarity_token, token_expiry
 from services.storage import Connection, Storage, UserRecord
@@ -50,8 +51,10 @@ async def lifespan(app: FastAPI):
     clarity = ClarityClient(settings, storage, http)
     recordings = RecordingsClient(storage, http) if settings.recordings_enabled else None
     dashboard = DashboardClient(storage, http) if settings.period_history_enabled else None
-    audit = AuditService(settings, storage, clarity, ClaudeService(settings), vault, recordings, dashboard)
+    claude = ClaudeService(settings)
+    audit = AuditService(settings, storage, clarity, claude, vault, recordings, dashboard)
     app.state.settings, app.state.storage, app.state.audit = settings, storage, audit
+    app.state.funnel = FunnelService(storage, recordings, dashboard, claude) if recordings else None
     app.state.clarity, app.state.vault = clarity, vault
     app.state.billing = PlayBillingVerifier(settings, http)
     task = asyncio.create_task(_snapshot_loop(audit))
@@ -298,6 +301,37 @@ async def recordings(body: AuditRequest, request: Request, user: UserRecord = De
     svc.enforce_policy(body, policy)
     source = await _resolve_source(request, user, body.project_id, policy.max_projects)
     return await svc.recordings_for(body, source)
+
+
+def _funnels(request: Request) -> FunnelService:
+    funnel = getattr(request.app.state, "funnel", None)
+    if funnel is None:
+        raise AuditError(503, "FUNNELS_UNAVAILABLE", "Funnel analysis isn't enabled on this server.")
+    return funnel
+
+
+@app.post("/api/v1/analytics/funnel/events")
+async def funnel_events(body: AuditRequest, request: Request, user: UserRecord = Depends(current_user)) -> dict:
+    """The events Clarity recorded for the range, to pick funnel steps from. Empty when the app sends none."""
+    svc: AuditService = request.app.state.audit
+    policy = POLICIES[user.tier]
+    svc.enforce_policy(body, policy)
+    source = await _resolve_source(request, user, body.project_id, policy.max_projects)
+    start, end, _ = svc.resolve_range(body)
+    return {"events": await _funnels(request).events(source, start, end)}
+
+
+@app.post("/api/v1/analytics/funnel")
+async def funnel(body: FunnelRequest, request: Request, user: UserRecord = Depends(current_user)) -> dict:
+    """Sessions through each funnel step, the worst drop-off, and the top reasons people stop there (with replay
+    links). Separate from the audit stream so its NDJSON contract is unchanged; doesn't use an audit."""
+    svc: AuditService = request.app.state.audit
+    policy = POLICIES[user.tier]
+    svc.enforce_policy(body, policy)
+    source = await _resolve_source(request, user, body.project_id, policy.max_projects)
+    start, end, _ = svc.resolve_range(body)
+    start_dt, end_dt = utc_range(start, end, utc_today())
+    return await _funnels(request).analyze(source, start_dt, end_dt, body.name.strip(), body.steps)
 
 
 @app.post("/api/v1/analytics/audit")

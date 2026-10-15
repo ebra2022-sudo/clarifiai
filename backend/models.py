@@ -75,6 +75,20 @@ class AuditRequest(BaseModel):
         return self
 
 
+class FunnelRequest(AuditRequest):
+    """A funnel kept by the app: event names in the order users should fire them."""
+    name: str = Field(default="Funnel", min_length=1, max_length=80)
+    steps: list[str] = Field(min_length=2, max_length=8)
+
+    @field_validator("steps")
+    @classmethod
+    def _validate_steps(cls, steps: list[str]) -> list[str]:
+        cleaned = [s.strip() for s in steps]
+        if any(not s or len(s) > 120 for s in cleaned):
+            raise ValueError("Each funnel step is an event name of 1-120 characters.")
+        return cleaned
+
+
 class SubscriptionVerifyRequest(BaseModel):
     purchase_token: str = Field(min_length=10, max_length=4096)
     product_id: str = Field(min_length=1, max_length=128)
