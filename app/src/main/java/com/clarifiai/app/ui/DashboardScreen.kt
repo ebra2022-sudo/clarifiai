@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.FilterAlt
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.ErrorOutline
@@ -184,6 +185,7 @@ fun DashboardScreen(vm: DashboardViewModel, activity: Activity) {
                             },
                             usageText = state.entitlements.usage.let { u -> u.limit?.let { "${u.used} of $it audits used this month" } },
                             historyNote = historyNote(state.timeframe, state.selectedProject),
+                            hasFunnel = state.funnel != null, onFunnel = vm::openFunnelEditor,
                         )
                     }
                     item {
@@ -192,6 +194,16 @@ fun DashboardScreen(vm: DashboardViewModel, activity: Activity) {
                             onOpenRecordings = { url -> uriHandler.openUri(url) },
                             onEditProject = vm::openEdit,
                         )
+                    }
+                    // Only for projects with a funnel, once there's a report for its range.
+                    state.funnel?.takeIf { state.funnelLoading || state.reportFunnel != null || state.funnelError != null }?.let { f ->
+                        item {
+                            FunnelCard(
+                                f, state.reportFunnel, state.funnelLoading, state.funnelError,
+                                onEdit = vm::openFunnelEditor, onRetry = vm::retryFunnel,
+                                modifier = Modifier.padding(horizontal = 16.dp),
+                            )
+                        }
                     }
                     state.reportSessions?.let { sample ->
                         item {
@@ -259,6 +271,13 @@ fun DashboardScreen(vm: DashboardViewModel, activity: Activity) {
             confirmLabel = "Delete", destructive = true,
             onConfirm = { vm.deleteProject(p.id); projectToDelete = null },
             onDismiss = { projectToDelete = null },
+        )
+    }
+
+    if (state.editingFunnel) {
+        FunnelEditorDialog(
+            current = state.funnel, events = state.funnelEvents, eventsLoading = state.funnelEventsLoading,
+            onSave = vm::saveFunnel, onDismiss = vm::dismissFunnelEditor,
         )
     }
 
@@ -433,6 +452,7 @@ private fun ControlsCard(
     onEdit: (ProjectDto) -> Unit, onReconnect: (ProjectDto) -> Unit,
     timeframe: Timeframe, allowed: List<String>, customLabel: String?,
     onTimeframe: (Timeframe) -> Unit, usageText: String?, historyNote: String? = null,
+    hasFunnel: Boolean = false, onFunnel: () -> Unit = {},
 ) {
     GlassCard(modifier, contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             if (projectsLoaded && projects.isEmpty()) {
@@ -442,7 +462,7 @@ private fun ControlsCard(
                     Text("Connect Clarity project", Modifier.padding(start = 8.dp), style = MaterialTheme.typography.labelLarge)
                 }
             } else {
-                ProjectPicker(projects, selected, onSelect, onConnect, onDelete, onEdit)
+                ProjectPicker(projects, selected, onSelect, onConnect, onDelete, onEdit, hasFunnel, onFunnel)
                 if (selected?.needsReauth == true) ReconnectBanner(selected, onReconnect)
             }
             // Timeframe as a UISegmentedControl; locked ranges show a lock and open the plans sheet.
@@ -488,6 +508,7 @@ private fun GlassControl(onClick: () -> Unit, content: @Composable RowScope.() -
 private fun ProjectPicker(
     projects: List<ProjectDto>, selected: ProjectDto?,
     onSelect: (String) -> Unit, onConnect: () -> Unit, onDelete: (ProjectDto) -> Unit, onEdit: (ProjectDto) -> Unit,
+    hasFunnel: Boolean, onFunnel: () -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
     Box {
@@ -523,6 +544,13 @@ private fun ProjectPicker(
                         }
                     },
                     onClick = { expanded = false; onSelect(p.id) },
+                )
+            }
+            if (selected != null) {
+                DropdownMenuItem(
+                    text = { Text(if (hasFunnel) "Edit funnel for ${selected.name}" else "Set up a funnel for ${selected.name}", color = Accent) },
+                    leadingIcon = { Icon(Icons.Outlined.FilterAlt, null, tint = Accent) },
+                    onClick = { expanded = false; onFunnel() },
                 )
             }
             DropdownMenuItem(
