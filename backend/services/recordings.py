@@ -216,7 +216,7 @@ class RecordingsClient:
     async def sample(self, source: ClaritySource, start: datetime, end: datetime) -> dict[str, Any] | None:
         """A bounded sample of real recordings for the period: patterns across all sampled sessions plus up to
         MAX_DETAILED full journeys. None if Clarity provides no recordings."""
-        key = f"rec:{source.key}:{start.date()}:{end.date()}"
+        key = f"rec2:{source.key}:{start.date()}:{end.date()}"  # rec2: event times now confirmed by lone fetches
         cached = await self._storage.cache_get(key, self._ttl)
         if cached is not None:
             return cached

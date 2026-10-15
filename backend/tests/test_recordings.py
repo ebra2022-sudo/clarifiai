@@ -105,7 +105,7 @@ async def test_audit_includes_recordings_and_says_so(client, settings, storage, 
     assert any(n.startswith("Reviewed 3 real session recordings") for n in events[0]["notes"])
 
     mock.status = 500
-    await storage.db.execute("DELETE FROM api_cache WHERE key LIKE 'rec:%'")
+    await storage.db.execute("DELETE FROM api_cache WHERE key LIKE 'rec2:%'")
     await storage.db.commit()
     events = ndjson(await client.post("/api/v1/analytics/audit", json={"project_id": "demo", "timeframe": "TODAY"}, headers=headers()))
     assert events[-1] == {"type": "done"} and "session_recordings" not in claude.calls[1]
