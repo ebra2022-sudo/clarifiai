@@ -48,31 +48,49 @@ def _iso(t: datetime) -> str:
     return t.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-def _label(text: Any) -> str:
-    """Tapped element text, without icon-font glyphs or e-mail addresses (Clarity already masks digits)."""
-    s = _PRIVATE_USE.sub("[icon]", str(text or "")).strip()
-    s = _EMAIL.sub("[redacted]", re.sub(r"\s+", " ", s))
-    return s[:40] or "[unlabelled]"
+def element(text: Any) -> str:
+    """A tapped element's readable name: its own words, else "Icon" or "Unlabelled element" (no bracketed placeholders,
+    which leaked into reports). Icon-font glyphs and e-mail addresses are dropped; Clarity already masks digits."""
+    raw = str(text or "")
+    had_icon = bool(_PRIVATE_USE.search(raw))
+    s = _EMAIL.sub("an email address", re.sub(r"\s+", " ", _PRIVATE_USE.sub(" ", raw))).strip()
+    if s:
+        return s[:40]
+    return "Icon" if had_icon else "Unlabelled element"
 
 
-def condense(session: dict[str, Any], why: str) -> dict[str, Any]:
-    """One recording as a compact journey: screens in order with what the user tapped, repeats collapsed."""
+def _target(name: str) -> str:
+    """How an element reads inside an event: 'on "Pay"', 'on an icon', 'on an unlabelled element'."""
+    return {"Icon": "on an icon", "Unlabelled element": "on an unlabelled element"}.get(name, f'on "{name}"')
+
+
+def _clock(start: Any) -> str | None:
+    """Clarity's event offset from the session start ("04:11:13") as the player shows it ("04:11")."""
+    parts = str(start or "").split(":")
+    return ":".join(parts[:2]) if len(parts) >= 2 and all(p.isdigit() for p in parts[:2]) else None
+
+
+def condense(session: dict[str, Any], why: str, sid: str | None = None) -> dict[str, Any]:
+    """One recording as a compact journey: screens in order with what the user tapped and when (offset in the replay),
+    repeats collapsed, so a finding can cite the exact moment to watch."""
     journey: list[dict[str, Any]] = []
     kept = omitted = 0
     for page in session.get("timeline") or []:
         screen = str(page.get("displayTitle") or page.get("url") or "(screen)")[:60]
         events: list[str] = []
-        last, repeat = None, 0
+        last, repeat, last_text = None, 0, ""
         for e in page.get("timelineEvents") or []:
             kind = EVENT_NAMES.get(str(e.get("eventtype", "")).lower(), str(e.get("eventtype", "event")).lower())
-            item = f"{kind} '{_label(e.get('text'))}'"
-            if item == last:  # same action repeated: "tap 'Back' ×3"
+            action = f"{kind} {_target(element(e.get('text')))}"
+            if action == last:  # same action repeated: "04:11 tap on "Back" ×3" (time of the first)
                 repeat += 1
-                events[-1] = f"{item} ×{repeat + 1}"
+                events[-1] = f"{last_text} ×{repeat + 1}"
             elif kept < MAX_EVENTS_PER_SESSION or kind != "tap":  # never drop dead/rage taps
-                events.append(item)
+                at = _clock(e.get("start"))
+                last_text = f"{at} {action}" if at else action
+                events.append(last_text)
                 kept += 1
-                last, repeat = item, 0
+                last, repeat = action, 0
             else:
                 omitted += 1
                 last, repeat = None, 0
@@ -80,6 +98,7 @@ def condense(session: dict[str, Any], why: str) -> dict[str, Any]:
     # Screens where nothing happened add noise; keep them only if that's all there is.
     journey = [p for p in journey if p["events"]] or journey[:1]
     out = {
+        "id": sid,
         "selected_for": why,
         "started": session.get("timestamp"),
         "active_time": session.get("activeDuration"),
@@ -88,6 +107,8 @@ def condense(session: dict[str, Any], why: str) -> dict[str, Any]:
         "replay": session.get("link"),
         "journey": journey,
     }
+    if sid is None:
+        del out["id"]
     if omitted:
         out["events_omitted"] = omitted
     return out
@@ -100,7 +121,7 @@ def _seconds(text: Any) -> int | None:
 
 
 def _events(s: dict[str, Any]) -> list[tuple[str, str]]:
-    return [(EVENT_NAMES.get(str(e.get("eventtype", "")).lower(), str(e.get("eventtype", "")).lower()), _label(e.get("text")))
+    return [(EVENT_NAMES.get(str(e.get("eventtype", "")).lower(), str(e.get("eventtype", "")).lower()), element(e.get("text")))
             for p in s.get("timeline") or [] for e in p.get("timelineEvents") or []]
 
 
@@ -178,7 +199,7 @@ class RecordingsClient:
         out = {
             "sampled_sessions": len(tagged),
             "patterns": patterns([s for _, s in tagged]),
-            "sessions": [condense(s, why) for why, s in select(tagged)],
+            "sessions": [condense(s, why, f"S{i}") for i, (why, s) in enumerate(select(tagged), 1)],
         }
         await self._storage.cache_put(key, out)
         return out

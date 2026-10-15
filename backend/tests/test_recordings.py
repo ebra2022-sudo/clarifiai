@@ -26,7 +26,9 @@ def test_condense_collapses_repeats_cleans_labels_and_marks_frustration():
                                 ("Dead click", "Approve with biometrics"), ("Rage clicks", ""),
                                 ("Click", "mail jane@doe.com")]), "dead taps")
     events = s["journey"][0]["events"]
-    assert events == ["tap 'Back' ×3", "dead tap 'Approve with biometrics'", "rage taps '[icon]'", "tap 'mail [redacted]'"]
+    assert events == ['00:01 tap on "Back" ×3', '00:01 dead tap on "Approve with biometrics"', "00:01 rage taps on an icon",
+                      '00:01 tap on "mail an email address"']
+    assert not any("[" in e for e in events)  # no bracketed placeholders in anything a report can quote
     assert s["selected_for"] == "dead taps" and s["replay"] == "L1" and "events_omitted" not in s
 
 
@@ -34,7 +36,7 @@ def test_condense_caps_plain_taps_but_never_drops_dead_or_rage_taps():
     taps = [("Click", f"Item {i}") for i in range(MAX_EVENTS_PER_SESSION + 10)] + [("Dead click", "Pay")]
     s = condense(session("L", taps), "most active")
     events = s["journey"][0]["events"]
-    assert events[-1] == "dead tap 'Pay'" and s["events_omitted"] == 10
+    assert events[-1] == '00:01 dead tap on "Pay"' and s["events_omitted"] == 10
 
 
 class RecordingsMock:
@@ -66,6 +68,7 @@ async def test_sample_dedupes_caches_and_queries_trouble_first(storage):
         out = await rec.sample(src, end - timedelta(days=3), end)
         # Round-robin across categories, most trouble first: rage-1, then dead-1, then the shared session.
         assert [s["replay"] for s in out["sessions"]] == ["rage-1", "dead-1", "shared"]
+        assert [s["id"] for s in out["sessions"]] == ["S1", "S2", "S3"]
         assert [s["selected_for"] for s in out["sessions"]] == ["rage taps", "dead taps", "rage taps"]
         assert out["sampled_sessions"] == 3
         assert out["patterns"]["most_rage_tapped"] == [{"element": "Block", "sessions": 1}]
@@ -148,3 +151,10 @@ async def test_recordings_endpoint_returns_the_audit_sample_without_using_an_aud
     r = await client.post("/api/v1/analytics/recordings", json={"project_id": "demo", "timeframe": "LAST_MONTH"}, headers=headers())
     assert r.status_code == 403  # same tier rules as audits
     await http.aclose()
+
+
+def test_unlabelled_elements_get_readable_names_and_sessions_get_ids():
+    from services.recordings import element
+    assert (element(""), element("\ue4f5"), element("  Pay  now ")) == ("Unlabelled element", "Icon", "Pay now")
+    s = condense(session("L", [("Dead click", "")]), "dead taps", "S4")
+    assert s["id"] == "S4" and s["journey"][0]["events"] == ["00:01 dead tap on an unlabelled element"]
