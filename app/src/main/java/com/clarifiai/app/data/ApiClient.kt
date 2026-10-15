@@ -229,6 +229,18 @@ class ApiClient(context: Context) {
         execute(request("api/v1/analytics/recordings").post(body).build()) { AppJson.decodeFromString(it.body.string()) }
     }
 
+    /** The events Clarity recorded for the range, to choose funnel steps from. */
+    suspend fun funnelEvents(dto: AuditRequestDto): FunnelEventsResponse = withContext(Dispatchers.IO) {
+        val body = AppJson.encodeToString(dto).toRequestBody(jsonType)
+        execute(request("api/v1/analytics/funnel/events").post(body).build()) { AppJson.decodeFromString(it.body.string()) }
+    }
+
+    /** Funnel drop-off and its top reasons (reads recordings and asks Claude, so it can take a minute; no audit used). */
+    suspend fun funnel(dto: FunnelRequestDto): FunnelReport = withContext(Dispatchers.IO) {
+        val body = AppJson.encodeToString(dto).toRequestBody(jsonType)
+        execute(request("api/v1/analytics/funnel").post(body).build()) { AppJson.decodeFromString(it.body.string()) }
+    }
+
     fun streamAudit(dto: AuditRequestDto): Flow<AuditEvent> = flow {
         val body = AppJson.encodeToString(dto).toRequestBody(jsonType)
         val call = http.newCall(request("api/v1/analytics/audit").post(body).build())
