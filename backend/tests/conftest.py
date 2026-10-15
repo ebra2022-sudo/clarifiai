@@ -50,6 +50,13 @@ class FakeClaude:
         self.error: AuditError | None = None
         self.calls: list[dict[str, Any]] = []
         self.frames: list[list[str]] = []
+        self.answer = ('{"reasons": [{"title": "Pay button does nothing", "explanation": "Users tap Pay and wait '
+                       '[D1 at 00:05](L-s2).", "sessions": 2}]}')
+        self.prompts: list[str] = []
+
+    async def complete(self, system: str, prompt: str, max_tokens: int) -> str:
+        self.prompts.append(prompt)
+        return self.answer
 
     async def stream_backlog(self, payload: dict[str, Any], frames: list[str] | None = None) -> AsyncIterator[str]:
         self.calls.append(payload)
