@@ -33,7 +33,7 @@ class PdfExportTest {
 
     private val markdown = """
         ### 🚨 Immediate Hotfixes (High Frustration)
-        - **Checkout `/checkout/payment`**: 412 rage clicks on the "Pay now" button. Likely cause: the button stays disabled while the card form validates asynchronously, with no loading state. Fix: show a spinner and disable double-submits; surface validation errors inline.
+        - **Checkout `/checkout/payment`**: 412 rage clicks on the "Pay now" button ([S1 at 02:03](https://clarity.microsoft.com/player/a/b/c)), dead-tapped '[unlabelled]' first. Likely cause: the button stays disabled while the card form validates asynchronously, with no loading state. Fix: show a spinner and disable double-submits; surface validation errors inline.
         - **Search results `/search`**: dead clicks on product thumbnails (1,120). Thumbnails aren't wrapped in links. Fix: make the whole card clickable.
         - **Account `/account/:id/orders`**: script errors in 0.8% of sessions break the order list. Fix: guard against null `shippingAddress` in the order renderer.
 
@@ -59,12 +59,13 @@ class PdfExportTest {
             mostTapped = listOf(ElementCount("Guardian", 38), ElementCount("Block", 32), ElementCount("Home", 31), ElementCount("Reports", 30)),
         ),
         sessions = listOf(
-            SessionJourney("rage taps", "2026-09-13 10:02:28", "04 minutes and 18 seconds", 1, 41,
+            SessionJourney("S1", "rage taps", "2026-09-13 10:02:28", "04 minutes and 18 seconds", 1, 41,
                 "https://clarity.microsoft.com/player/yfmtbrodjt/1iuvkcw/2b82hs",
-                listOf(JourneyStep("Reports", "00:00", listOf("tap 'Reports'", "dead tap 'YouTube' ×6", "rage taps '[unlabelled]'", "dead tap 'Granted by guardian'")))),
-            SessionJourney("left within a minute", "2026-10-02 08:41:10", "00 minutes and 47 seconds", 1, 3,
+                listOf(JourneyStep("Reports", "00:00", listOf("00:12 tap on \"Reports\"", "01:47 dead tap on \"YouTube\" ×6",
+                    "02:03 rage taps on an unlabelled element", "02:40 dead tap on \"Granted by guardian\"")))),
+            SessionJourney("S2", "left within a minute", "2026-10-02 08:41:10", "00 minutes and 47 seconds", 1, 3,
                 "https://clarity.microsoft.com/player/yfmtbrodjt/1jk2abc/9xy1zz",
-                listOf(JourneyStep("Onboarding", "00:00", listOf("tap 'Get started'", "tap 'Continue'", "tap 'Back'")))),
+                listOf(JourneyStep("Onboarding", "00:00", listOf("00:05 tap on \"Get started\"", "00:21 tap on \"Continue\"", "00:44 tap on \"Back\"")))),
         ),
     )
 

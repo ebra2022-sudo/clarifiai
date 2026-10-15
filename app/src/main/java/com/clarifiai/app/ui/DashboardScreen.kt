@@ -107,6 +107,8 @@ import androidx.compose.material.icons.outlined.TouchApp
 import androidx.compose.material.icons.outlined.UnfoldMore
 import com.clarifiai.app.data.RecordingSample
 import com.clarifiai.app.data.SessionJourney
+import com.clarifiai.app.data.cleanPlaceholders
+import com.clarifiai.app.data.elementName
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -319,8 +321,8 @@ private fun SessionsCard(sample: RecordingSample, modifier: Modifier = Modifier,
             }
         }
         sample.patterns?.let { p ->
-            val chips = p.mostDeadTapped.take(3).map { "Dead taps · ${it.element} (${it.sessions})" to Warn } +
-                p.mostRageTapped.take(2).map { "Rage taps · ${it.element} (${it.sessions})" to Bad }
+            val chips = p.mostDeadTapped.take(3).map { "Dead taps · ${elementName(it.element)} (${it.sessions})" to Warn } +
+                p.mostRageTapped.take(2).map { "Rage taps · ${elementName(it.element)} (${it.sessions})" to Bad }
             if (chips.isNotEmpty()) {
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(horizontal = 16.dp)) {
                     items(chips) { (text, color) -> Chip(text, color) }
@@ -358,7 +360,7 @@ private fun SessionRow(s: SessionJourney, onWatch: (String) -> Unit) {
         IconTile(icon, color, size = 30.dp)
         Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
             Text(
-                s.selectedFor.replaceFirstChar { it.uppercase() } + (s.shortActiveTime?.let { " · $it" } ?: ""),
+                listOfNotNull(s.id, s.selectedFor.replaceFirstChar { it.uppercase() }, s.shortActiveTime).joinToString(" · "),
                 style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, color = Ink,
             )
             Text(s.keyMoments(2).joinToString("  ·  ").ifEmpty { s.started.orEmpty() },
@@ -564,7 +566,7 @@ private fun ReportCard(
 ) {
     // Parsing runs off the main thread. Without retainState the renderer shows an empty box while each streamed chunk
     // is re-parsed, which made the report flash blank many times a second during an audit.
-    val markdownState = rememberMarkdownState(state.markdown, retainState = true)
+    val markdownState = rememberMarkdownState(cleanPlaceholders(state.markdown), retainState = true)
     GlassCard(modifier = modifier.fillMaxWidth()) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconTile(Icons.Outlined.AutoAwesome, Color(0xFF5E5CE6))

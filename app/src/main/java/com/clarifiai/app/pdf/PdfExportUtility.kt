@@ -10,7 +10,10 @@ import android.graphics.pdf.PdfDocument
 import android.text.TextUtils
 import android.text.TextPaint
 import com.clarifiai.app.data.Kpis
+import com.clarifiai.app.data.ElementCount
 import com.clarifiai.app.data.RecordingSample
+import com.clarifiai.app.data.cleanPlaceholders
+import com.clarifiai.app.data.elementName
 import com.clarifiai.app.data.SessionJourney
 import com.clarifiai.app.data.reviewedRecordings
 import kotlinx.coroutines.Dispatchers
@@ -90,18 +93,18 @@ object PdfExportUtility {
 
     // ---------------------------------------------------------------- inline text
 
-    private enum class Kind { NORMAL, BOLD, CODE }
+    /** CITE = a Markdown link; reports use them as proof ("[S3 at 04:11](replay)"), drawn as a chip. */
+    private enum class Kind { NORMAL, BOLD, CODE, CITE }
 
     /** A run of text with one style; `spaceBefore` is false when it is glued to the previous run ("**Cart**:"). */
     private data class Token(val text: String, val kind: Kind, val spaceBefore: Boolean)
 
-    private val inline = Regex("\\*\\*(.+?)\\*\\*|`([^`]+)`")
+    private val inline = Regex("\\*\\*(.+?)\\*\\*|`([^`]+)`|\\[([^\\]]+)]\\(([^)]*)\\)")
     private val code = Regex("`([^`]+)`")
     private val pieces = Regex("\\s+|\\S+")
 
     private fun tokens(raw: String, baseBold: Boolean): List<Token> {
-        val text = raw
-            .replace(Regex("\\[([^\\]]+)]\\([^)]*\\)"), "$1")
+        val text = cleanPlaceholders(raw)
             .replace(Regex("(?<![*\\w])[*_]([^*_]+)[*_](?![*\\w])"), "$1")
         val out = ArrayList<Token>()
         var pendingSpace = false
@@ -117,7 +120,11 @@ object PdfExportUtility {
         var last = 0
         for (m in inline.findAll(text)) {
             add(text.substring(last, m.range.first), Kind.NORMAL)
-            if (m.groupValues[1].isEmpty()) add(m.groupValues[2], Kind.CODE)
+            if (m.groupValues[3].isNotEmpty()) {
+                // A citation stays one unbroken chip: "S3 at 04:11".
+                out += Token(m.groupValues[3].trim(), Kind.CITE, pendingSpace && out.isNotEmpty())
+                pendingSpace = false
+            } else if (m.groupValues[1].isEmpty()) add(m.groupValues[2], Kind.CODE)
             else {
                 // Code inside bold ("**Checkout `/pay`**") keeps its code styling.
                 val bold = m.groupValues[1]
@@ -476,14 +483,17 @@ object PdfExportUtility {
             sectionHeading("Session evidence")
             section = Section.OTHER
             paragraph("${sample.sampledSessions} real sessions sampled from Microsoft Clarity across the period " +
-                "(rage and dead taps, quick backs, early exits and the most active users); ${sample.sessions.size} read in full below.",
+                "(rage and dead taps, quick backs, early exits and the most active users); ${sample.sessions.size} read in full below. " +
+                "Proof chips in the findings (such as S3 at 04:11) point to the card with that number; open its replay link and " +
+                "jump to that time.",
                 M, CONTENT_W, 9.5f, MUTED)
             space(8f)
             sample.patterns?.let { p ->
+                fun rows(items: List<ElementCount>) = items.take(4).map { "${elementName(it.element)}  ·  ${it.sessions}" }
                 patternTiles(listOf(
-                    Triple("MOST DEAD-TAPPED", AMBER, p.mostDeadTapped.take(4).map { "${it.element}  ·  ${it.sessions}" }),
-                    Triple("MOST RAGE-TAPPED", RED, p.mostRageTapped.take(4).map { "${it.element}  ·  ${it.sessions}" }),
-                    Triple("MOST USED", GREEN, p.mostTapped.take(4).map { "${it.element}  ·  ${it.sessions}" }),
+                    Triple("MOST DEAD-TAPPED", AMBER, rows(p.mostDeadTapped)),
+                    Triple("MOST RAGE-TAPPED", RED, rows(p.mostRageTapped)),
+                    Triple("MOST USED", GREEN, rows(p.mostTapped)),
                 ))
                 text("Counts are sessions, so one user tapping repeatedly counts once.", M, y + 7f, Style(7f, FAINT, REGULAR))
                 y += 18f
@@ -531,13 +541,22 @@ object PdfExportUtility {
                 "minute" in why -> BLUE
                 else -> GREEN
             }
+            var px = M + pad
+            s.id?.let { id ->
+                // The id findings cite ("S3 at 04:11"), so a reader can match a proof chip to this card.
+                val idStyle = Style(7.5f, Color.WHITE, BOLD, 0.04f)
+                val iw = paint(idStyle).measureText(id) + 10f
+                canvas?.drawRoundRect(RectF(px, top + pad, px + iw, top + pad + 14f), 4f, 4f, fill(BLUE))
+                text(id, px + 5f, top + pad + 10f, idStyle)
+                px += iw + 6f
+            }
             val pill = Style(7f, whyColor, MEDIUM, 0.06f)
             val pw = paint(pill).measureText(why.uppercase()) + 12f
-            canvas?.drawRoundRect(RectF(M + pad, top + pad, M + pad + pw, top + pad + 14f), 7f, 7f, fill(tint(whyColor)))
-            text(why.uppercase(), M + pad + 6f, top + pad + 10f, pill)
+            canvas?.drawRoundRect(RectF(px, top + pad, px + pw, top + pad + 14f), 7f, 7f, fill(tint(whyColor)))
+            text(why.uppercase(), px + 6f, top + pad + 10f, pill)
             val facts = listOfNotNull(s.started?.take(16), s.shortActiveTime?.let { "$it active" }, s.taps?.takeIf { it > 0 }?.let { "$it taps" })
                 .joinToString("  ·  ")
-            text(facts, M + pad + pw + 8f, top + pad + 10f, Style(8f, MUTED, REGULAR))
+            text(facts, px + pw + 8f, top + pad + 10f, Style(8f, MUTED, REGULAR))
             y = top + pad + 16f + 6f
             moments.forEach { lines ->
                 canvas?.drawCircle(M + pad + 3f, y + size * 0.6f, 1.8f, fill(whyColor))
@@ -584,10 +603,15 @@ object PdfExportUtility {
             Kind.NORMAL -> Style(size, color, base)
             Kind.BOLD -> Style(size, INK, if (base == MEDIUM) BOLD else MEDIUM)
             Kind.CODE -> Style(size * 0.9f, INK, MONO)
+            Kind.CITE -> Style(size * 0.86f, BLUE, MEDIUM)
         }
 
         private fun width(t: Token, size: Float, base: Typeface) =
-            paint(styleFor(t.kind, size, BODY, base)).measureText(t.text) + if (t.kind == Kind.CODE) 6f else 0f
+            paint(styleFor(t.kind, size, BODY, base)).measureText(t.text) + when (t.kind) {
+                Kind.CODE -> 6f
+                Kind.CITE -> 10f
+                else -> 0f
+            }
 
         /** Greedy line breaking; tokens glued to their neighbour (no space) are kept on the same line. */
         private fun wrap(tokens: List<Token>, maxW: Float, size: Float, base: Typeface = REGULAR): List<List<Placed>> {
@@ -615,6 +639,11 @@ object PdfExportUtility {
                     val w = paint(st).measureText(t.text)
                     c.drawRoundRect(RectF(x0 + x, baseline - size * 0.82f, x0 + x + w + 6f, baseline + size * 0.28f), 2.5f, 2.5f, fill(CODE_BG))
                     c.drawText(t.text, x0 + x + 3f, baseline, paint(st))
+                } else if (t.kind == Kind.CITE) {
+                    // Proof chip: matches the S-numbered session cards in "Session evidence".
+                    val w = paint(st).measureText(t.text)
+                    c.drawRoundRect(RectF(x0 + x, baseline - size * 0.8f, x0 + x + w + 10f, baseline + size * 0.3f), 5f, 5f, fill(tint(BLUE)))
+                    c.drawText(t.text, x0 + x + 5f, baseline, paint(st))
                 } else {
                     c.drawText(t.text, x0 + x, baseline, paint(st))
                 }

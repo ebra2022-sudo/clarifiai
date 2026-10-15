@@ -34,6 +34,8 @@ data class JourneyStep(val screen: String = "", val at: String? = null, val even
 /** One recording read in full: why it was picked, when, and what the user did, in order. */
 @Serializable
 data class SessionJourney(
+    /** "S3": how report findings cite this session ("[S3 at 04:11](replay)"). */
+    val id: String? = null,
     @SerialName("selected_for") val selectedFor: String = "",
     val started: String? = null,
     @SerialName("active_time") val activeTime: String? = null,
@@ -44,12 +46,12 @@ data class SessionJourney(
     @SerialName("events_omitted") val eventsOmitted: Int? = null,
 ) {
     val events: List<String> get() = journey.flatMap { it.events }
-    val frustrationEvents: Int get() = events.count { it.startsWith("dead tap") || it.startsWith("rage taps") }
+    val frustrationEvents: Int get() = events.count(::isFrustration)
 
-    /** The moments worth reading first: dead and rage taps, else the first few taps. */
+    /** The moments worth reading first: dead and rage taps, else the first few taps. Each starts with its mm:ss time. */
     fun keyMoments(max: Int = 4): List<String> {
-        val trouble = events.filter { it.startsWith("dead tap") || it.startsWith("rage taps") }
-        return (trouble.ifEmpty { events }).take(max)
+        val trouble = events.filter(::isFrustration).map(::cleanPlaceholders)
+        return (trouble.ifEmpty { events.map(::cleanPlaceholders) }).take(max)
     }
 
     /** "04 minutes and 18 seconds" -> "4m 18s". */
@@ -58,4 +60,22 @@ data class SessionJourney(
         listOfNotNull(parts["hour"]?.let { "${it}h" }, parts["minute"]?.let { "${it}m" }, parts["second"]?.let { "${it}s" })
             .joinToString(" ").ifEmpty { t }
     }
+}
+
+private fun isFrustration(event: String) = "dead tap" in event || "rage taps" in event
+
+/**
+ * Older reports and cached samples used bracketed placeholders ("[unlabelled]", "[icon]") that read like broken
+ * text in a report. Turns them into words wherever report text is shown or printed.
+ */
+fun cleanPlaceholders(text: String): String = text
+    .replace(Regex("""['"]?\[unlabell?ed]['"]?"""), "an unlabelled element")
+    .replace(Regex("""['"]?\[icon]['"]?"""), "an icon")
+    .replace("[redacted]", "an email address")
+
+/** A pattern element's display name ("[unlabelled]" from older samples -> "Unlabelled element"). */
+fun elementName(raw: String): String = when (raw.trim()) {
+    "[unlabelled]", "[unlabeled]" -> "Unlabelled element"
+    "[icon]" -> "Icon"
+    else -> raw
 }
