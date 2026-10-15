@@ -12,7 +12,7 @@ import json
 import logging
 import re
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -68,14 +68,46 @@ def _target(name: str) -> str:
 
 
 def _clock(start: Any) -> str | None:
-    """Clarity's event offset from the session start ("04:11:13") as the player shows it ("04:11")."""
+    """Clarity's event offset from the session start as the player shows it: "04:11" stays, "01:02:05" -> "62:05"."""
     parts = str(start or "").split(":")
-    return ":".join(parts[:2]) if len(parts) >= 2 and all(p.isdigit() for p in parts[:2]) else None
+    if not 2 <= len(parts) <= 3 or not all(p.isdigit() for p in parts):
+        return None
+    if len(parts) == 2:
+        return f"{int(parts[0]):02d}:{int(parts[1]):02d}"
+    return f"{int(parts[0]) * 60 + int(parts[1]):02d}:{int(parts[2]):02d}"
+
+
+def _flat(session: dict[str, Any]) -> list[dict[str, Any]]:
+    return [e for p in session.get("timeline") or [] for e in p.get("timelineEvents") or []]
+
+
+def retime(batch: dict[str, Any], alone: dict[str, Any] | None) -> dict[str, Any]:
+    """The batch copy of a session with event times only where they're known to match Clarity's player.
+
+    In a multi-session response the endpoint shifts event times by amounts that change from call to call and from
+    screen to screen (one tap read 14:57, 00:01 and 02:56 a minute apart), so those times are dropped. Fetched alone,
+    a session comes back with only its first screen but with correct, stable times; those are kept for the events
+    they match (same element hash and type, in order).
+    """
+    exact = _flat(alone) if alone else []
+    i = 0
+    timeline = []
+    for page in batch.get("timeline") or []:
+        events = []
+        for e in page.get("timelineEvents") or []:
+            known = exact[i] if i < len(exact) else None
+            same = known is not None and known.get("hash") == e.get("hash") and known.get("eventtype") == e.get("eventtype")
+            if not same:
+                exact = []  # once the two disagree, nothing after can be trusted
+            events.append({**e, "start": known.get("start") if same else None})
+            i += 1
+        timeline.append({**page, "timelineEvents": events})
+    return {**batch, "timeline": timeline}
 
 
 def condense(session: dict[str, Any], why: str, sid: str | None = None) -> dict[str, Any]:
-    """One recording as a compact journey: screens in order with what the user tapped and when (offset in the replay),
-    repeats collapsed, so a finding can cite the exact moment to watch."""
+    """One recording as a compact journey: screens in order with what the user tapped and when (offset in the replay,
+    where known; see retime), repeats collapsed, so a finding can cite the exact moment to watch."""
     journey: list[dict[str, Any]] = []
     kept = omitted = 0
     for page in session.get("timeline") or []:
@@ -179,6 +211,7 @@ def select(tagged: list[tuple[str, dict[str, Any]]]) -> list[tuple[str, dict[str
 class RecordingsClient:
     def __init__(self, storage: Storage, http: httpx.AsyncClient, timeout: float = 45.0, cache_ttl: int = 3600) -> None:
         self._storage, self._http, self._timeout, self._ttl = storage, http, timeout, cache_ttl
+        self._alone_slots = asyncio.Semaphore(2)  # Clarity rate-limits bursts (HTTP 429)
 
     async def sample(self, source: ClaritySource, start: datetime, end: datetime) -> dict[str, Any] | None:
         """A bounded sample of real recordings for the period: patterns across all sampled sessions plus up to
@@ -199,13 +232,26 @@ class RecordingsClient:
                     tagged.append((why, s))
         if not tagged:
             return None
+        picked = select(tagged)
+        exact = await asyncio.gather(*(self._alone(source, s) for _, s in picked))
         out = {
             "sampled_sessions": len(tagged),
             "patterns": patterns([s for _, s in tagged]),
-            "sessions": [condense(s, why, f"S{i}") for i, (why, s) in enumerate(select(tagged), 1)],
+            "sessions": [condense(retime(s, alone), why, f"S{i}") for i, ((why, s), alone) in enumerate(zip(picked, exact), 1)],
         }
         await self._storage.cache_put(key, out)
         return out
+
+    async def _alone(self, source: ClaritySource, session: dict[str, Any]) -> dict[str, Any] | None:
+        """The session as returned on its own (a request covering just the second it started), whose first-screen
+        event times are correct. None if it can't be refetched; the session then simply has no event times."""
+        try:
+            began = datetime.strptime(str(session.get("timestamp")), "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+        async with self._alone_slots:
+            found = await self._fetch(source, began, began + timedelta(seconds=1), {}, 5, SORT_NEWEST)
+        return next((s for s in found if s.get("link") == session.get("link") and s.get("timeline")), None)
 
     async def _fetch(self, source: ClaritySource, start: datetime, end: datetime,
                      filters: dict[str, Any], count: int, sort: int) -> list[dict[str, Any]]:

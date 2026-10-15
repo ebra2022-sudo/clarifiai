@@ -73,9 +73,13 @@ async def test_sample_dedupes_caches_and_queries_trouble_first(storage):
         assert out["sampled_sessions"] == 3
         assert out["patterns"]["most_rage_tapped"] == [{"element": "Block", "sessions": 1}]
         assert out["patterns"]["most_dead_tapped"] == [{"element": "Pay", "sessions": 1}]
-        assert all(b["filters"]["date"]["start"].endswith("Z") for b in mock.bodies) and len(mock.bodies) == 5
-        assert all(b["count"] == 8 for b in mock.bodies)  # short range: small samples
-        assert await rec.sample(src, end - timedelta(days=3), end) == out and len(mock.bodies) == 5  # cached
+        assert all(b["filters"]["date"]["start"].endswith("Z") for b in mock.bodies)
+        categories, alone = mock.bodies[:5], mock.bodies[5:]
+        assert all(b["count"] == 8 for b in categories)  # short range: small samples
+        # Each picked session is refetched for the one second it started in, where Clarity's event times are exact.
+        assert len(alone) == 3 and all(b["start"] == "2026-10-06T10:00:00.000Z" and b["end"] == "2026-10-06T10:00:01.000Z"
+                                       for b in alone)
+        assert await rec.sample(src, end - timedelta(days=3), end) == out and len(mock.bodies) == 8  # cached
 
 
 async def test_sample_failure_is_soft(storage):
@@ -129,7 +133,7 @@ async def test_long_range_requests_larger_samples(storage):
     async with httpx.AsyncClient(transport=httpx.MockTransport(mock)) as http:
         end = datetime(2026, 10, 7, tzinfo=timezone.utc)
         await RecordingsClient(storage, http).sample(ClaritySource("c:l", "t"), end - timedelta(days=30), end)
-    assert {b["count"] for b in mock.bodies} == {25}
+    assert {b["count"] for b in mock.bodies[:5]} == {25}
 
 
 async def test_recordings_endpoint_returns_the_audit_sample_without_using_an_audit(client, settings, storage, claude):
@@ -164,3 +168,23 @@ def test_masked_text_cannot_break_report_formatting():
     from services.recordings import element
     assert element("Get * coins for $*") == "Get • coins for $•"
     assert element("`code` [x]") == "'code' (x)"
+
+
+def test_event_times_are_kept_only_where_a_lone_fetch_confirms_them():
+    from services.recordings import retime
+    def ev(kind: str, h: str, start: str) -> dict:
+        return {"eventtype": kind, "text": "Pay", "hash": h, "start": start}
+    batch = {"link": "L", "timeline": [
+        {"displayTitle": "Home", "start": "00:00", "timelineEvents": [ev("Click", "a", "41:21"), ev("Dead click", "b", "41:25")]},
+        {"displayTitle": "Pay", "start": "00:30", "timelineEvents": [ev("Click", "c", "59:02")]},
+    ]}
+    alone = {"link": "L", "timeline": [{"displayTitle": "Home", "start": "00:00",
+                                        "timelineEvents": [ev("Click", "a", "00:01"), ev("Dead click", "b", "00:05")]}]}
+    fixed = retime(batch, alone)
+    assert [e["start"] for p in fixed["timeline"] for e in p["timelineEvents"]] == ["00:01", "00:05", None]
+    assert condense(fixed, "dead taps", "S1")["journey"][0]["events"] == ['00:01 tap on "Pay"', '00:05 dead tap on "Pay"']
+    assert condense(fixed, "dead taps", "S1")["journey"][1]["events"] == ['tap on "Pay"']  # shifted time dropped
+    # No lone copy, or one that disagrees: no times at all rather than wrong ones.
+    assert all(e["start"] is None for p in retime(batch, None)["timeline"] for e in p["timelineEvents"])
+    other = {"link": "L", "timeline": [{"timelineEvents": [ev("Click", "z", "00:01")]}]}
+    assert all(e["start"] is None for p in retime(batch, other)["timeline"] for e in p["timelineEvents"])
