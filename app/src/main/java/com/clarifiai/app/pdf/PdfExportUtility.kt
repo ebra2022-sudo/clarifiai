@@ -10,7 +10,15 @@ import android.graphics.pdf.PdfDocument
 import android.text.TextUtils
 import android.text.TextPaint
 import com.clarifiai.app.data.Kpis
+import android.util.Log
 import com.clarifiai.app.data.ElementCount
+import com.clarifiai.app.data.ReplayLinks
+import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
+import com.tom_roush.pdfbox.pdmodel.PDDocument
+import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
+import com.tom_roush.pdfbox.pdmodel.interactive.action.PDActionURI
+import com.tom_roush.pdfbox.pdmodel.interactive.annotation.PDAnnotationLink
+import com.tom_roush.pdfbox.pdmodel.interactive.annotation.PDBorderStyleDictionary
 import com.clarifiai.app.data.RecordingSample
 import com.clarifiai.app.data.cleanPlaceholders
 import com.clarifiai.app.data.elementName
@@ -52,13 +60,47 @@ object PdfExportUtility {
         val total = Renderer(null, meta, 0).render(blocks)
         val file = File(dir, "render-${System.currentTimeMillis()}.pdf")
         val doc = PdfDocument()
+        val links: List<LinkSpot>
         try {
-            Renderer(doc, meta, total).render(blocks)
+            val renderer = Renderer(doc, meta, total)
+            renderer.render(blocks)
+            links = renderer.links
             FileOutputStream(file).use { doc.writeTo(it) }
         } finally {
             doc.close()
         }
+        addLinks(context, file, links)
         Rendered(file, total)
+    }
+
+    /** A clickable area on a page (PDF points, top-left origin, as drawn on the canvas) and where it goes. */
+    private data class LinkSpot(val page: Int, val rect: RectF, val url: String)
+
+    /**
+     * Android's PdfDocument can't make links, so the finished PDF gets link annotations over every proof chip, session
+     * id badge and replay URL. Best effort: if this fails the PDF is still complete, just not clickable.
+     */
+    private fun addLinks(context: Context, file: File, links: List<LinkSpot>) {
+        if (links.isEmpty()) return
+        runCatching {
+            PDFBoxResourceLoader.init(context.applicationContext)
+            val out = File(file.parentFile, file.name + ".linked")
+            PDDocument.load(file).use { pdf ->
+                for ((pageNo, spots) in links.groupBy { it.page }) {
+                    val page = pdf.getPage(pageNo - 1)
+                    val height = page.mediaBox.height
+                    for (s in spots) {
+                        page.annotations.add(PDAnnotationLink().apply {
+                            rectangle = PDRectangle(s.rect.left, height - s.rect.bottom, s.rect.width(), s.rect.height())
+                            borderStyle = PDBorderStyleDictionary().apply { width = 0f }
+                            action = PDActionURI().apply { uri = s.url }
+                        })
+                    }
+                }
+                pdf.save(out)
+            }
+            out.renameTo(file)
+        }.onFailure { Log.w("PdfExport", "Couldn't add links to the PDF", it) }
     }
 
     // ---------------------------------------------------------------- markdown → blocks
@@ -97,7 +139,7 @@ object PdfExportUtility {
     private enum class Kind { NORMAL, BOLD, CODE, CITE }
 
     /** A run of text with one style; `spaceBefore` is false when it is glued to the previous run ("**Cart**:"). */
-    private data class Token(val text: String, val kind: Kind, val spaceBefore: Boolean)
+    private data class Token(val text: String, val kind: Kind, val spaceBefore: Boolean, val url: String? = null)
 
     private val inline = Regex("\\*\\*(.+?)\\*\\*|`([^`]+)`|\\[([^\\]]+)]\\(([^)]*)\\)")
     private val code = Regex("`([^`]+)`")
@@ -122,7 +164,10 @@ object PdfExportUtility {
             add(text.substring(last, m.range.first), Kind.NORMAL)
             if (m.groupValues[3].isNotEmpty()) {
                 // A citation stays one unbroken chip: "S3 at 04:11".
-                out += Token(m.groupValues[3].trim(), Kind.CITE, pendingSpace && out.isNotEmpty())
+                val label = m.groupValues[3].trim()
+                // A proof chip opens the replay at the moment it cites (see ReplayLinks).
+                out += Token(label, Kind.CITE, pendingSpace && out.isNotEmpty(),
+                    m.groupValues[4].takeIf { it.startsWith("http") }?.let { ReplayLinks.at(it, ReplayLinks.seconds(label)) })
                 pendingSpace = false
             } else if (m.groupValues[1].isEmpty()) add(m.groupValues[2], Kind.CODE)
             else {
@@ -198,6 +243,12 @@ object PdfExportUtility {
         private var page: PdfDocument.Page? = null
         private var canvas: Canvas? = null
         private var pageNo = 0
+        /** Where to put clickable links once the PDF is written (filled only on the drawing pass). */
+        val links = mutableListOf<LinkSpot>()
+
+        private fun link(rect: RectF, url: String?) {
+            if (canvas != null && url != null) links += LinkSpot(pageNo, rect, url)
+        }
         private var y = 0f
         private var atPageTop = true
         private val bottom = FOOTER_Y - 18f
@@ -525,7 +576,8 @@ object PdfExportUtility {
             val pad = 12f
             val size = 9f
             val lineH = size * 1.45f
-            val moments = s.keyMoments(4).map { wrap(tokens(it, false), CONTENT_W - 2 * pad - 12f, size) }
+            val keyMoments = s.keyMoments(4)
+            val moments = keyMoments.map { wrap(tokens(it, false), CONTENT_W - 2 * pad - 12f, size) }
             val link = s.replay?.let { ellipsize(it, Style(7.5f, BLUE, REGULAR), CONTENT_W - 2 * pad) }
             val h = pad + 16f + 6f + moments.sumOf { it.size } * lineH + (if (link != null) 14f else 0f) + pad - 4f
             if (h < bottom - CONT_TOP) ensure(h + 8f)
@@ -548,6 +600,7 @@ object PdfExportUtility {
                 val iw = paint(idStyle).measureText(id) + 10f
                 canvas?.drawRoundRect(RectF(px, top + pad, px + iw, top + pad + 14f), 4f, 4f, fill(BLUE))
                 text(id, px + 5f, top + pad + 10f, idStyle)
+                link(RectF(px, top + pad, px + iw, top + pad + 14f), s.replay)
                 px += iw + 6f
             }
             val pill = Style(7f, whyColor, MEDIUM, 0.06f)
@@ -558,11 +611,19 @@ object PdfExportUtility {
                 .joinToString("  ·  ")
             text(facts, px + pw + 8f, top + pad + 10f, Style(8f, MUTED, REGULAR))
             y = top + pad + 16f + 6f
-            moments.forEach { lines ->
+            moments.forEachIndexed { i, lines ->
                 canvas?.drawCircle(M + pad + 3f, y + size * 0.6f, 1.8f, fill(whyColor))
+                val momentTop = y
                 lines.forEach { line -> drawLine(line, M + pad + 12f, y + size, size, BODY); y += lineH }
+                // Each "01:47 dead tap …" line opens the replay at 01:47.
+                s.replay?.let { url -> link(RectF(M + pad, momentTop, M + CONTENT_W - pad, y), ReplayLinks.at(url, ReplayLinks.seconds(keyMoments[i]))) }
             }
-            link?.let { text(it, M + pad, y + 10f, Style(7.5f, BLUE, REGULAR)); y += 14f }
+            link?.let {
+                val st = Style(7.5f, BLUE, REGULAR)
+                text(it, M + pad, y + 10f, st)
+                link(RectF(M + pad, y + 1f, M + pad + paint(st).measureText(it), y + 13f), s.replay)
+                y += 14f
+            }
             y = top + h + 8f
         }
 
@@ -642,8 +703,10 @@ object PdfExportUtility {
                 } else if (t.kind == Kind.CITE) {
                     // Proof chip: matches the S-numbered session cards in "Session evidence".
                     val w = paint(st).measureText(t.text)
-                    c.drawRoundRect(RectF(x0 + x, baseline - size * 0.8f, x0 + x + w + 10f, baseline + size * 0.3f), 5f, 5f, fill(tint(BLUE)))
+                    val chip = RectF(x0 + x, baseline - size * 0.8f, x0 + x + w + 10f, baseline + size * 0.3f)
+                    c.drawRoundRect(chip, 5f, 5f, fill(tint(BLUE)))
                     c.drawText(t.text, x0 + x + 5f, baseline, paint(st))
+                    link(RectF(chip.left - 1f, chip.top - 2f, chip.right + 1f, chip.bottom + 2f), t.url)
                 } else {
                     c.drawText(t.text, x0 + x, baseline, paint(st))
                 }

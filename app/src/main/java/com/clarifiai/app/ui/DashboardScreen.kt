@@ -107,6 +107,7 @@ import androidx.compose.material.icons.outlined.TouchApp
 import androidx.compose.material.icons.outlined.UnfoldMore
 import com.clarifiai.app.data.RecordingSample
 import com.clarifiai.app.data.SessionJourney
+import com.clarifiai.app.data.ReplayLinks
 import com.clarifiai.app.data.cleanPlaceholders
 import com.clarifiai.app.data.elementName
 import androidx.compose.foundation.clickable
@@ -353,7 +354,10 @@ private fun SessionRow(s: SessionJourney, onWatch: (String) -> Unit) {
     }
     Row(
         Modifier.fillMaxWidth().heightIn(min = 60.dp)
-            .clickable(enabled = s.replay != null) { s.replay?.let(onWatch) }
+            .clickable(enabled = s.replay != null) {
+                // Open at the first frustration moment, the part worth watching.
+                s.replay?.let { onWatch(ReplayLinks.at(it, s.keyMoments(1).firstOrNull()?.let(ReplayLinks::seconds))) }
+            }
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -566,7 +570,7 @@ private fun ReportCard(
 ) {
     // Parsing runs off the main thread. Without retainState the renderer shows an empty box while each streamed chunk
     // is re-parsed, which made the report flash blank many times a second during an audit.
-    val markdownState = rememberMarkdownState(cleanPlaceholders(state.markdown), retainState = true)
+    val markdownState = rememberMarkdownState(ReplayLinks.deepLink(cleanPlaceholders(state.markdown)), retainState = true)
     GlassCard(modifier = modifier.fillMaxWidth()) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconTile(Icons.Outlined.AutoAwesome, Color(0xFF5E5CE6))

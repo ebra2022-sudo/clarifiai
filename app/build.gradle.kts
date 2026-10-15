@@ -75,6 +75,7 @@ dependencies {
     implementation(libs.billing.ktx)
     implementation(libs.markdown.renderer.m3)
     implementation(libs.haze)
+    implementation(libs.pdfbox.android)
     implementation(libs.haze.glass)
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
