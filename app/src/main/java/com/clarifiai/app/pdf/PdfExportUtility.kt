@@ -12,6 +12,7 @@ import android.text.TextPaint
 import com.clarifiai.app.data.Kpis
 import android.util.Log
 import com.clarifiai.app.data.ElementCount
+import com.clarifiai.app.data.FunnelReport
 import com.clarifiai.app.data.ReplayLinks
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
@@ -27,6 +28,7 @@ import com.clarifiai.app.data.reviewedRecordings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import kotlin.math.roundToInt
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -44,6 +46,8 @@ object PdfExportUtility {
         val generatedAt: Date = Date(),
         /** Real Clarity session recordings behind the report, printed as a "Session evidence" section. */
         val sessions: RecordingSample? = null,
+        /** The project's funnel drop-off and its top reasons, printed as its own section when the project has one. */
+        val funnel: FunnelReport? = null,
     )
 
     data class Rendered(val file: File, val pages: Int)
@@ -289,6 +293,7 @@ object PdfExportUtility {
                     Block.Rule -> { ensure(16f); canvas?.drawRect(M, y + 7f, M + CONTENT_W, y + 7.6f, fill(RULE)); y += 16f }
                 }
             }
+            meta.funnel?.takeIf { it.steps.isNotEmpty() }?.let { funnelSection(it) }
             meta.sessions?.takeIf { it.sessions.isNotEmpty() }?.let { sessionEvidence(it) }
             aboutThisData()
             finishPage()
@@ -526,6 +531,83 @@ object PdfExportUtility {
                 b.indent > 0 && next is Block.Bullet && next.indent == b.indent -> 3f
                 else -> 7f
             }
+        }
+
+        // ------------------------------------------------------------ funnel
+
+        private fun funnelSection(f: FunnelReport) {
+            sectionHeading("Funnel: ${f.name.ifBlank { "Funnel" }}")
+            section = Section.OTHER
+            val since = f.since?.take(16)?.let { " Counts start at $it UTC, the furthest back Clarity's 250-session sample reaches for every step." }.orEmpty()
+            paragraph("Sessions in Microsoft Clarity that fired each step's event; a step counts only for sessions that " +
+                "reached the step before it.$since", M, CONTENT_W, 9.5f, MUTED)
+            space(8f)
+            funnelBars(f)
+            f.dropOff?.let { d ->
+                funnelCallout("BIGGEST DROP-OFF", "${"%,d".format(d.dropped)} of ${"%,d".format(d.reached)} sessions " +
+                    "(${(d.rate * 100).roundToInt()}%) reached ${d.from} but never ${d.to}.")
+            } ?: funnelCallout("NO DROP-OFF", "Every session that started the funnel reached the last step in this period.")
+            if (f.reasons.isNotEmpty()) {
+                subHeading("Top reasons users don't complete it")
+                f.reasons.forEachIndexed { i, r ->
+                    space(4f)
+                    val share = r.sessions?.let { "  (seen in $it of ${f.sessions.size} sessions reviewed)" }.orEmpty()
+                    paragraph("${i + 1}. ${r.title}$share", M, CONTENT_W, 10.5f, INK, bold = true)
+                    space(2f)
+                    paragraph(r.explanation, M + 14f, CONTENT_W - 14f, 9.5f, BODY)
+                    space(6f)
+                }
+            }
+            if (f.sessions.isNotEmpty()) {
+                subHeading("Drop-off sessions")
+                paragraph("Sessions that reached ${f.dropOff?.from ?: "the step"} but never ${f.dropOff?.to ?: "the next"}, read in full. " +
+                    "Proof chips such as D2 at 01:14 open that replay just before the moment.", M, CONTENT_W, 9f, MUTED)
+                space(6f)
+                f.sessions.forEach { sessionCard(it) }
+            }
+            space(10f)
+        }
+
+        private fun funnelBars(f: FunnelReport) {
+            val top = f.steps.first().sessions.coerceAtLeast(1)
+            val labelW = 150f
+            val barX = M + labelW
+            val barW = CONTENT_W - labelW - 60f
+            f.steps.forEachIndexed { i, step ->
+                ensure(26f)
+                atPageTop = false
+                val nameStyle = Style(9f, INK, MEDIUM)
+                text(ellipsize("${i + 1}. ${step.name}", nameStyle, labelW - 10f), M, y + 12f, nameStyle)
+                canvas?.drawRoundRect(RectF(barX, y + 3f, barX + barW, y + 15f), 4f, 4f, fill(PANEL))
+                val w = barW * step.sessions / top
+                if (w > 0) canvas?.drawRoundRect(RectF(barX, y + 3f, barX + w.coerceAtLeast(6f), y + 15f), 4f, 4f, fill(BLUE))
+                textRight("%,d".format(step.sessions), M + CONTENT_W, y + 12f, Style(9f, INK, MEDIUM))
+                y += 18f
+                f.steps.getOrNull(i + 1)?.let { next ->
+                    val lost = step.sessions - next.sessions
+                    if (lost > 0 && step.sessions > 0) {
+                        val worst = f.dropOff?.from == step.name
+                        text("−${"%,d".format(lost)} (${(lost * 100f / step.sessions).roundToInt()}%) didn't reach the next step",
+                            barX, y + 6f, Style(7.5f, if (worst) RED else MUTED, if (worst) MEDIUM else REGULAR))
+                        y += 10f
+                    }
+                }
+            }
+            y += 6f
+        }
+
+        private fun funnelCallout(label: String, body: String) {
+            val pad = 12f
+            val lines = wrap(tokens(body, false), CONTENT_W - 2 * pad, 9.5f)
+            val h = pad + 12f + lines.size * 14f + pad - 2f
+            ensure(h + 8f)
+            atPageTop = false
+            val top = y
+            canvas?.drawRoundRect(RectF(M, top, M + CONTENT_W, top + h), 8f, 8f, fill(RED_TINT))
+            text(label, M + pad, top + pad + 6f, Style(6.8f, RED, MEDIUM, 0.18f))
+            y = top + pad + 12f
+            lines.forEach { line -> drawLine(line, M + pad, y + 9.5f, 9.5f, INK); y += 14f }
+            y = top + h + 8f
         }
 
         // ------------------------------------------------------------ session evidence
