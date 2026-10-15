@@ -83,18 +83,20 @@ fun elementName(raw: String): String = when (raw.trim()) {
 /**
  * Links that open a Clarity replay at the moment a finding cites ("S3 at 04:11").
  *
- * [TIME_PARAM] is the query parameter Clarity's player reads as the start time; null keeps plain session links until
- * the format is confirmed from a real Clarity share link.
+ * Clarity's player starts at the `t` query parameter, in milliseconds: its own Share dialog writes `t=1000 × seconds`
+ * when "start at" is chosen, and both the player and shared-recording pages read it back as an integer. Replays start
+ * [LEAD_IN_SECONDS] before the cited moment so the viewer sees what led up to it.
  */
 object ReplayLinks {
-    val TIME_PARAM: String? = null
+    const val TIME_PARAM = "t"
+    const val LEAD_IN_SECONDS = 8
     private val citation = Regex("""\[([^\]]*?\b(\d{1,3}):(\d{2})\b[^\]]*)]\((https://clarity\.microsoft\.com/player/[^)\s]+)\)""")
 
-    /** The replay URL at [seconds] into the session (or the plain URL while the time format is unknown). */
+    /** The replay URL starting a little before [seconds] into the session; any start time on the URL is replaced. */
     fun at(url: String, seconds: Int?): String {
-        val param = TIME_PARAM ?: return url
         if (seconds == null) return url
-        return url + (if ("?" in url) "&" else "?") + param + "=" + seconds
+        val base = url.replace(Regex("""([?&])$TIME_PARAM=\d*&?"""), "$1").trimEnd('?', '&')
+        return base + (if ("?" in base) "&" else "?") + TIME_PARAM + "=" + (seconds - LEAD_IN_SECONDS).coerceAtLeast(0) * 1000L
     }
 
     /** Seconds from a citation's text, e.g. "S3 at 04:11" -> 251. */
