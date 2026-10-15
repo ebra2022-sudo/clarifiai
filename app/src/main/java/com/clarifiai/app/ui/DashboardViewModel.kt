@@ -13,6 +13,11 @@ import com.clarifiai.app.data.ApiException
 import com.clarifiai.app.data.AuditEvent
 import com.clarifiai.app.data.AuditRequestDto
 import com.clarifiai.app.data.Entitlements
+import com.clarifiai.app.data.FunnelDefinition
+import com.clarifiai.app.data.FunnelEvent
+import com.clarifiai.app.data.FunnelReport
+import com.clarifiai.app.data.FunnelRequestDto
+import com.clarifiai.app.data.FunnelStore
 import com.clarifiai.app.data.Kpis
 import com.clarifiai.app.data.RecordingSample
 import com.clarifiai.app.data.reviewedRecordings
@@ -80,6 +85,16 @@ data class DashboardUiState(
     /** PDFs exported earlier, newest first. */
     val savedReports: List<SavedReport> = emptyList(),
     val showReports: Boolean = false,
+    /** The funnel defined for the selected project (kept on this device), if any. */
+    val funnel: FunnelDefinition? = null,
+    /** Drop-off and top reasons for [funnel] over the report's range; null until loaded or when there's no funnel. */
+    val reportFunnel: FunnelReport? = null,
+    val funnelLoading: Boolean = false,
+    val funnelError: String? = null,
+    val editingFunnel: Boolean = false,
+    /** Events Clarity recorded for the project, offered as funnel steps in the editor. */
+    val funnelEvents: List<FunnelEvent> = emptyList(),
+    val funnelEventsLoading: Boolean = false,
 ) {
     val selectedProject: ProjectDto? get() = projects.firstOrNull { it.id == projectId }
     /** Real Clarity session recordings the server reviewed for this report. */
@@ -95,6 +110,10 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = app.getSharedPreferences("clarity_ai", Context.MODE_PRIVATE)
     private val api = ApiClient(app)
     private val reports = ReportStore(app)
+    private val funnels = FunnelStore(app)
+    /** The request behind the report on screen, so a funnel added afterwards can be analysed for the same range. */
+    private var reportRequest: AuditRequestDto? = null
+    private var funnelJob: Job? = null
     private val _state = MutableStateFlow(DashboardUiState(projectId = prefs.getString("selected_project", "").orEmpty()))
     val state: StateFlow<DashboardUiState> = _state.asStateFlow()
 
@@ -127,7 +146,7 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
                     // Keep the selection if it still exists, otherwise fall back to the first project.
                     val selected = st.projectId.takeIf { id -> r.projects.any { it.id == id } } ?: r.projects.firstOrNull()?.id.orEmpty()
                     prefs.edit().putString("selected_project", selected).apply()
-                    st.copy(projects = r.projects, projectId = selected, projectsLoaded = true)
+                    st.copy(projects = r.projects, projectId = selected, projectsLoaded = true, funnel = funnels.get(selected))
                 }
             }
         }
@@ -135,7 +154,58 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
 
     fun selectProject(id: String) {
         prefs.edit().putString("selected_project", id).apply()
-        _state.update { it.copy(projectId = id) }
+        _state.update { it.copy(projectId = id, funnel = funnels.get(id)) }
+    }
+
+    // ------------------------------------------------------------ funnel
+
+    fun openFunnelEditor() {
+        val s = _state.value
+        val project = s.selectedProject ?: return
+        _state.update { it.copy(editingFunnel = true, funnelEventsLoading = true, funnelEvents = emptyList()) }
+        // The events seen over the report's range, else the last 3 days (or today on plans without it).
+        val dto = reportRequest?.takeIf { it.projectId == project.id } ?: AuditRequestDto(
+            projectId = project.id,
+            timeframe = if (Timeframe.LAST_3_DAYS.name in s.entitlements.features.allowedTimeframes) Timeframe.LAST_3_DAYS.name else Timeframe.TODAY.name,
+        )
+        viewModelScope.launch {
+            val events = runCatching { api.funnelEvents(dto).events }.getOrDefault(emptyList())
+            _state.update { it.copy(funnelEvents = events, funnelEventsLoading = false) }
+        }
+    }
+
+    fun dismissFunnelEditor() = _state.update { it.copy(editingFunnel = false) }
+
+    /** Saves (or, with null, removes) the selected project's funnel and analyses it for the report on screen. */
+    fun saveFunnel(funnel: FunnelDefinition?) {
+        val project = _state.value.selectedProject ?: return
+        val kept = funnel?.takeIf { it.usable }?.let { f -> f.copy(name = f.name.trim().ifEmpty { "Funnel" }, steps = f.steps.map(String::trim).filter(String::isNotEmpty)) }
+        funnels.put(project.id, kept)
+        funnelJob?.cancel()
+        _state.update { it.copy(funnel = kept, editingFunnel = false, reportFunnel = null, funnelError = null, funnelLoading = false) }
+        reportRequest?.takeIf { it.projectId == project.id && kept != null }?.let(::loadFunnel)
+    }
+
+    fun retryFunnel() { reportRequest?.let(::loadFunnel) }
+
+    private fun loadFunnel(dto: AuditRequestDto) {
+        val funnel = funnels.get(dto.projectId)?.takeIf { it.usable } ?: return
+        funnelJob?.cancel()
+        funnelJob = viewModelScope.launch {
+            _state.update { it.copy(funnelLoading = true, funnelError = null, reportFunnel = null) }
+            try {
+                val report = api.funnel(FunnelRequestDto(dto.projectId, dto.timeframe, dto.startDate, dto.endDate, funnel.name, funnel.steps))
+                _state.update { it.copy(reportFunnel = report) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: ApiException) {
+                _state.update { it.copy(funnelError = e.message) }
+            } catch (e: Exception) {
+                _state.update { it.copy(funnelError = "Couldn't analyse the funnel. Try again.") }
+            } finally {
+                _state.update { it.copy(funnelLoading = false) }
+            }
+        }
     }
 
     fun openConnect() {
@@ -314,8 +384,11 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
             _state.update {
                 it.copy(loading = true, markdown = "", kpis = null, error = null, lockedMessage = null,
                     notes = emptyList(), reportTimeframeLabel = s.timeframe.label,
-                    reportRequestedDays = requestedDays, reportDaysCovered = 0, reportSessions = null)
+                    reportRequestedDays = requestedDays, reportDaysCovered = 0, reportSessions = null,
+                    reportFunnel = null, funnelError = null)
             }
+            funnelJob?.cancel()
+            reportRequest = null
             val sb = StringBuilder()
             var lastPush = 0L
             var completed = false
@@ -350,6 +423,10 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
             } finally {
                 _state.update { it.copy(loading = false, markdown = sb.toString()) }
                 if (completed && _state.value.reportRecordings > 0) loadReportSessions(dto)
+                if (completed) {
+                    reportRequest = dto
+                    loadFunnel(dto)
+                }
                 refreshEntitlements()
                 refreshProjects() // updates today's Clarity request count
             }
@@ -405,6 +482,7 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
                         projectName = projectName, timeframeLabel = s.reportTimeframeLabel, kpis = s.kpis,
                         notes = s.notes, whiteLabel = s.entitlements.features.whiteLabelPdf, generatedAt = now,
                         sessions = s.reportSessions,
+                        funnel = s.reportFunnel,
                     ),
                 )
                 val report = reports.save(
