@@ -158,3 +158,9 @@ def test_unlabelled_elements_get_readable_names_and_sessions_get_ids():
     assert (element(""), element("\ue4f5"), element("  Pay  now ")) == ("Unlabelled element", "Icon", "Pay now")
     s = condense(session("L", [("Dead click", "")]), "dead taps", "S4")
     assert s["id"] == "S4" and s["journey"][0]["events"] == ["00:01 dead tap on an unlabelled element"]
+
+
+def test_masked_text_cannot_break_report_formatting():
+    from services.recordings import element
+    assert element("Get * coins for $*") == "Get • coins for $•"
+    assert element("`code` [x]") == "'code' (x)"

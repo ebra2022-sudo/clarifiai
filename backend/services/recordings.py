@@ -54,6 +54,9 @@ def element(text: Any) -> str:
     raw = str(text or "")
     had_icon = bool(_PRIVATE_USE.search(raw))
     s = _EMAIL.sub("an email address", re.sub(r"\s+", " ", _PRIVATE_USE.sub(" ", raw))).strip()
+    # Clarity masks hidden text with "*"; as Markdown that turns into stray bold/italics in the report, so show the mask
+    # the way Clarity's player does. Backticks and brackets would also be read as formatting.
+    s = s.replace("*", "•").replace("`", "'").replace("[", "(").replace("]", ")")
     if s:
         return s[:40]
     return "Icon" if had_icon else "Unlabelled element"
