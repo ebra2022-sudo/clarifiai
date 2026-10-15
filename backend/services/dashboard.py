@@ -71,6 +71,17 @@ class DashboardClient:
         await self._storage.cache_put(key, out)
         return out
 
+    async def ask(self, source: ClaritySource, question: str) -> dict[str, Any] | None:
+        """One question, cached like the period answers."""
+        key = f"dashq:{source.key}:{question}"
+        cached = await self._storage.cache_get(key, self._ttl)
+        if cached is not None:
+            return cached
+        answer = await self._ask(source, question)
+        if answer:
+            await self._storage.cache_put(key, answer)
+        return answer
+
     async def _ask(self, source: ClaritySource, question: str) -> dict[str, Any] | None:
         try:
             r = await self._http.post(DASHBOARD_URL, json={"query": question, "timezone": "UTC"}, timeout=self._timeout,

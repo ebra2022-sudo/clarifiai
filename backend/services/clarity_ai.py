@@ -497,6 +497,13 @@ class ClaudeService:
             raise AuditError(502, "AI_ERROR", f"AI engine error (HTTP {exc.status_code}).") from exc
 
 
+    async def complete(self, system: str, prompt: str, max_tokens: int) -> str:
+        """A short, non-streamed answer (used for funnel reasons, which have their own prompt)."""
+        msg = await self._client.messages.create(model=self._model, max_tokens=max_tokens, system=system,
+                                                 messages=[{"role": "user", "content": scrub_text(prompt)}])
+        return "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
+
+
 def frame_media_type(frame_b64: str) -> str:
     return image_media_type(base64.b64decode(frame_b64[:24])) or "image/jpeg"
 
