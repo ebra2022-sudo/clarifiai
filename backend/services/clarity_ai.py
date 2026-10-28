@@ -28,17 +28,22 @@ log = logging.getLogger("clarity_ai")
 
 PROMPT_TEMPLATE = """You are a Principal Product Manager and UX Researcher. You are given sanitized Microsoft Clarity behaviour data for one product and, when attached, frames from real user session recordings. Write a concise, non-conversational report for a product manager.
 
-Focus on users, not code: what people were trying to do, where they hesitated, got stuck or gave up, and which journeys work. Treat rage/dead taps and errors as evidence of user frustration, not as engineering tasks; mention implementation detail only when it is the whole point. Ground every claim in the data or the recording frames, name the screen or page and the numbers, and say plainly when the data is too thin to conclude something.
+Focus on users, not code: whether people come back, how deeply they engage, what they were trying to do, where they hesitated, got stuck or gave up, and which journeys work. Mention implementation detail only when it is the whole point. Ground every claim in the data or the recording frames, name the screen or page and the numbers, and say plainly when the data is too thin to conclude something.
+
+Weigh dead taps carefully. Clarity counts a tap as "dead" whenever the screen doesn't visibly change, so many are taps on plain text, labels or areas never meant to respond. Treat a dead tap as a real problem only when users repeat it, rage-tap, or then get stuck or leave; mention isolated ones briefly as likely noise, and never let them crowd out retention and engagement findings. Rage taps, errors, quick backs and early exits are stronger signals.
 
 [INSERT SANITIZED CLARITY JSON HERE]
 
 Format the output strictly in Markdown with these specific headers:
 
-### 🚨 Immediate Hotfixes (High Frustration)
-- [The few user-facing problems to fix first: where it happens, what the user experiences, the evidence, and the product fix]
+### 🔁 User Retention Insights
+- [Whether users stay and come back: new vs returning users, what first sessions look like, early exits (sessions under a minute), the last screens before people leave, and the journeys that keep them; with the evidence]
 
-### 📉 Friction Trends & User Drop-off
-- [How users move through the product: engagement, depth, where journeys stall or users leave, which audiences struggle, and what the session recordings show]
+### 💡 User Engagement Insights
+- [How deeply people use the product: active time, screens per session, the features and content used most, what the most engaged sessions do, and where engagement stays shallow; with the evidence]
+
+### 🐞 Dead Taps & Other Friction
+- [Only the frustration that matters: repeated dead taps, rage taps, errors and quick backs that block a journey, ranked by how many users they affect, each with the product fix; note isolated dead taps on text or labels as likely noise]
 
 ### 🚀 Strategic Next-Sprint Product Roadmap
 - [Prioritized product bets for activation, engagement and retention, each tied to the evidence above and how to measure it]

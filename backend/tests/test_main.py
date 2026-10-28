@@ -54,7 +54,7 @@ async def test_free_tier_stream_is_cut_before_roadmap(client, storage, claude):
     assert events[-2]["type"] == "locked" and events[-2]["section"] == "roadmap"
     assert events[-1] == {"type": "done"}
     text = "".join(e["text"] for e in events if e["type"] == "delta")
-    assert "Immediate Hotfixes" in text and "Friction Trends" in text
+    assert "User Retention Insights" in text and "Dead Taps & Other Friction" in text
     assert "🚀" not in text and "Roadmap" not in text and "one-click" not in text
     meta = events[0]
     assert meta["tier"] == "FREE"

@@ -43,8 +43,8 @@ class FakeClaude:
 
     def __init__(self) -> None:
         self.chunks: list[str] = [
-            "### 🚨 Immediate Hotfixes (High Frustration)\n- fix checkout\n\n",
-            "### 📉 Friction Trends & User Drop-off\n- drop at cart\n\n### 🚀 Strat",
+            "### 🔁 User Retention Insights\n- most leave after the first screen\n\n",
+            "### 💡 User Engagement Insights\n- drop at cart\n\n### 🐞 Dead Taps & Other Friction\n- fix checkout\n\n### 🚀 Strat",
             "egic Next-Sprint Product Roadmap\n- one-click pay\n",
         ]
         self.error: AuditError | None = None

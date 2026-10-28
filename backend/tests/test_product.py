@@ -39,6 +39,13 @@ def test_prompt_is_user_focused_and_keeps_the_roadmap_marker():
     assert "[INSERT SANITIZED CLARITY JSON HERE]" in PROMPT_TEMPLATE
 
 
+def test_report_is_split_into_retention_engagement_and_friction_before_the_roadmap():
+    headers = [line for line in PROMPT_TEMPLATE.splitlines() if line.startswith("### ")]
+    assert headers == ["### 🔁 User Retention Insights", "### 💡 User Engagement Insights",
+                       "### 🐞 Dead Taps & Other Friction", "### 🚀 Strategic Next-Sprint Product Roadmap"]
+    assert "likely noise" in PROMPT_TEMPLATE  # isolated dead taps on text aren't headline findings
+
+
 async def test_recording_frames_reach_claude_with_context(client, claude):
     r = await client.post(AUDIT, json={"project_id": "demo", "timeframe": "TODAY", "recording_frames": [JPEG, PNG],
                                        "recording_note": "Trying to pay, mail me at jane@doe.com"}, headers=headers())
