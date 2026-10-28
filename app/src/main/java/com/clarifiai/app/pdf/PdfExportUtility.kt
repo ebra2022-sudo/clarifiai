@@ -215,6 +215,8 @@ object PdfExportUtility {
     private val RED_TINT = Color.parseColor("#FEF2F2")
     private val AMBER = Color.parseColor("#D97706")
     private val GREEN = Color.parseColor("#059669")
+    private val VIOLET = Color.parseColor("#7C3AED")
+    private val TEAL = Color.parseColor("#0D9488")
     private val ON_NAVY = Color.parseColor("#CBD5E1")
     private val ON_NAVY_MUTED = Color.parseColor("#7C8BA1")
 
@@ -227,13 +229,16 @@ object PdfExportUtility {
     private data class Style(val size: Float, val color: Int, val face: Typeface, val tracking: Float = 0f)
 
     private enum class Section(val color: Int, val tint: Int?) {
-        HOTFIX(RED, RED_TINT), FRICTION(AMBER, null), ROADMAP(GREEN, null), OTHER(BLUE, null);
+        HOTFIX(RED, RED_TINT), RETENTION(VIOLET, null), ENGAGEMENT(TEAL, null), FRICTION(AMBER, null),
+        ROADMAP(GREEN, null), OTHER(BLUE, null);
 
         companion object {
             fun of(title: String): Section = title.lowercase().let { l ->
                 when {
-                    "hotfix" in l || "immediate" in l -> HOTFIX
-                    "friction" in l || "drop" in l || "trend" in l -> FRICTION
+                    "hotfix" in l || "immediate" in l -> HOTFIX // reports from before the retention/engagement split
+                    "retention" in l -> RETENTION
+                    "engagement" in l -> ENGAGEMENT
+                    "dead tap" in l || "friction" in l || "drop" in l || "trend" in l -> FRICTION
                     "roadmap" in l || "strategic" in l || "sprint" in l -> ROADMAP
                     else -> OTHER
                 }
