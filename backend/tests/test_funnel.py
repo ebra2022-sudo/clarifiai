@@ -41,6 +41,8 @@ class ClarityMock:
                 {"SmartEvents": "Pay", "SessionCount": 1}]})
         assert str(request.url) == RECORDINGS_URL
         events = body["filters"].get("smartEvents")
+        if events and events[0] not in self.fired:  # like Clarity: an unknown event name is ignored -> every session
+            return httpx.Response(200, json=[session(f"L-{s}") for s in ("s1", "s2", "s3", "s4", "s5")])
         if events:
             return httpx.Response(200, json=[session(f"L-{s}", taps=[("Click", "Next"), ("Dead click", "Pay")])
                                              for s in self.fired[events[0]]])
@@ -97,4 +99,13 @@ async def test_a_funnel_needs_two_to_eight_named_steps(client, storage, claude):
         r = await client.post("/api/v1/analytics/funnel", headers=headers(),
                               json={"project_id": "demo", "timeframe": "TODAY", "steps": steps})
         assert r.status_code == 422, steps
+    await http.aclose()
+
+
+async def test_steps_clarity_cant_see_make_the_funnel_unavailable_instead_of_wrong(client, storage, claude):
+    mock, http = await wire(storage, claude)
+    mock.fired = {"Open": ["s1", "s2"]}  # "first_open" is a custom event the API doesn't know
+    out = (await client.post("/api/v1/analytics/funnel", headers=headers(),
+                             json={"project_id": "demo", "timeframe": "TODAY", "steps": ["Open", "first_open"]})).json()
+    assert out["unavailable"] == ["first_open"] and out["steps"] == [] and out["reasons"] == [] and not claude.prompts
     await http.aclose()

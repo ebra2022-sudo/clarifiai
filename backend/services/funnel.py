@@ -5,6 +5,11 @@ filters sessions by smart/custom event. A funnel is therefore a list of event na
 project. A session reaches step k when it fired step k's event and reached step k-1; the sessions that reached a step
 but never fired the next one dropped off there. Up to MAX_DROPPED of those are read in full and Claude names the top
 reasons, each backed by replay links. Event order inside a session isn't available, so steps are matched by presence.
+
+The endpoint silently ignores event names it doesn't know and returns every session instead, and it only knows Clarity's
+smart events: custom events sent with the SDK's sendCustomEvent (and dashboard funnels) aren't exposed. Each step is
+therefore compared with a request for a name that can't exist; a step returning the same sessions isn't visible to the
+API, and the funnel is reported as unavailable rather than with counts that mean nothing.
 """
 from __future__ import annotations
 
@@ -28,6 +33,7 @@ PER_STEP = 250  # the endpoint's maximum sample per request
 MAX_DROPPED = 8  # drop-off sessions read in full
 MAX_STEPS = 8
 MAX_REASON_TOKENS = 2000
+PROBE_EVENT = "clarifiai-no-such-event-7f3a"  # a name no project uses: what the endpoint returns for unknown events
 # Clarity's automatic catch-all and blank names aren't steps anyone defines.
 NOT_EVENTS = {"", "other"}
 
@@ -119,11 +125,18 @@ class FunnelService:
             async with self._slots:
                 return await self._recordings._fetch(source, start, end, {"smartEvents": [event]}, PER_STEP, SORT_NEWEST)
 
-        samples = await asyncio.gather(*(sample(e) for e in steps))
+        *samples, ignored = await asyncio.gather(*(sample(e) for e in [*steps, PROBE_EVENT]))
+        unknown_links = {str(s.get("link")) for s in ignored}
+        unseen = [e for e, sm in zip(steps, samples) if {str(s.get("link")) for s in sm} == unknown_links]
+        if unseen:
+            out = {"name": name, "steps": [], "since": None, "drop_off": None, "reasons": [], "sessions": [],
+                   "unavailable": unseen}
+            await self._storage.cache_put(key, out)
+            return out
         reached, by_link, horizon = reach(samples, [len(s) >= PER_STEP for s in samples])
         out: dict[str, Any] = {
             "name": name, "steps": [{"name": e, "sessions": len(r)} for e, r in zip(steps, reached)],
-            "since": horizon or None, "drop_off": None, "reasons": [], "sessions": [],
+            "since": horizon or None, "drop_off": None, "reasons": [], "sessions": [], "unavailable": [],
         }
         drops = [(i, reached[i] - reached[i + 1]) for i in range(len(steps) - 1)]
         i, dropped = max(drops, key=lambda d: len(d[1]), default=(0, set()))
