@@ -99,6 +99,19 @@ fun FunnelCard(
 
 @Composable
 private fun FunnelResult(report: FunnelReport) {
+    if (report.unavailable.isNotEmpty()) {
+        Column(
+            Modifier.fillMaxWidth().clip(GlassShapes.Control).background(Warn.copy(alpha = 0.10f)).padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text("NOT AVAILABLE THROUGH CLARITY'S API", style = MaterialTheme.typography.labelSmall, color = Warn, fontWeight = FontWeight.SemiBold)
+            Text("Clarity doesn't share ${report.unavailable.joinToString(", ")} through its API. It only exposes Clarity's own " +
+                "smart events; custom events sent from the app (and funnels built in Clarity's dashboard) stay in the dashboard. " +
+                "Use steps from the events listed when editing the funnel.",
+                style = MaterialTheme.typography.bodyMedium, color = Ink)
+        }
+        return
+    }
     val first = report.steps.firstOrNull()?.sessions?.coerceAtLeast(1) ?: 1
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         report.steps.forEachIndexed { i, step ->

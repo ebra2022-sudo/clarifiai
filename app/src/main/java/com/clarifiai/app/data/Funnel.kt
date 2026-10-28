@@ -49,6 +49,11 @@ data class FunnelReport(
     val reasons: List<FunnelReason> = emptyList(),
     /** The drop-off sessions read in full (ids D1, D2, ...), which the reasons cite. */
     val sessions: List<SessionJourney> = emptyList(),
+    /**
+     * Steps Clarity's API can't see (custom events sent with sendCustomEvent aren't exposed, only Clarity's smart
+     * events). When any are listed there are no counts, since they would be meaningless.
+     */
+    val unavailable: List<String> = emptyList(),
 )
 
 @Serializable
