@@ -45,7 +45,7 @@ private data class PlanInfo(val tier: Tier, val tagline: String, val features: L
 private val PLANS = listOf(
     PlanInfo(Tier.FREE, "Try it on one project", listOf(
         "3 audits / month", "Today & last 3 days", "Top 3 friction pages",
-        "Hotfixes + friction trends (roadmap locked)", "1 project")),
+        "Retention, engagement & friction insights (roadmap locked)", "1 project")),
     PlanInfo(Tier.PRO, "For product teams", listOf(
         "60 audits / month", "Up to last 7 days", "Top 10 friction pages",
         "Full strategic sprint roadmap", "Executive PDF export & share", "5 projects")),

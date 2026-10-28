@@ -621,7 +621,7 @@ private fun ReportCard(
                 state.loading && state.markdown.isBlank() -> ShimmerReport()
                 state.error != null && state.markdown.isBlank() -> ErrorBlock(state.error, onRetry)
                 state.markdown.isBlank() -> Text(
-                    "Choose a connected Clarity project and a timeframe, then run an audit. You'll get a prioritised hotfix list, friction trends and a sprint roadmap.",
+                    "Choose a connected Clarity project and a timeframe, then run an audit. You'll get retention, engagement and friction insights, and a sprint roadmap.",
                     color = InkMuted,
                 )
                 else -> Markdown(
